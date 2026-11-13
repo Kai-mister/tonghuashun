@@ -1,0 +1,31 @@
+name: Publish Android APK
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish signed APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          apk=android/dist/sim-manager.apk
+          test -s "$apk"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$apk" --clobber
+          else
+            gh release create "$TAG" "$apk" --verify-tag \
+              --title "模拟仓管家 $TAG" \
+              --notes "Android 安装包见下方 sim-manager.apk。首次使用请按仓库 README 部署本机服务并配对。"
+          fi
