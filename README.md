@@ -4,13 +4,14 @@
 
 ## 本机 USB 调试
 
-在当前仓库目录执行，沿用参考项目的 Python 环境。手机开启 USB 调试，连接数据线并允许该电脑调试。
+安装 Python 3.12 和 Android SDK Platform Tools，将 adb 加入 PATH。在仓库根目录创建虚拟环境并安装依赖。手机开启 USB 调试，连接数据线并允许该电脑调试。
 
 ```sh
-PY=/Users/songzekai/Documents/Codex/ths_adb_trader/.venv/bin/python
-"$PY" run.py devices
-"$PY" run.py check
-"$PY" run.py serve
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python run.py devices
+.venv/bin/python run.py check
+.venv/bin/python run.py serve
 ```
 
 默认选择唯一的 USB 设备。多台设备时可指定 `--serial 序列号`。检查命令验证设备状态、同花顺安装情况和 UI 自动化连接。
