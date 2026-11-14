@@ -1,0 +1,31 @@
+name: Refresh v1.1 assets
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/refresh-v1.1.yml']
+permissions:
+  contents: write
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          python3 -m unittest discover -s tests -v
+          zip -q ths-sim-upgrade.zip android/dist/sim-manager.apk strategy_settings.py premarket.py strategy_worker.py phone/manager.py phone/local.py ths/simulator.py scripts/upgrade-phone.sh README.md
+          cat > /tmp/release-notes.txt <<'NOTES'
+          Android 模拟仓管家 v1.1（更新附件，版本号不变）。
+
+          - 策略设置、盘前持仓核对、最近策略委托改为底部菜单切换。
+          - 未设置时显示默认金额 10000 / 5000 / 20000 元、挂单时间 09:20。
+          - 删除特定账号的 100 股排除规则，只管理程序委托核实到的成交数量。
+          - 跨日缺失成交回报保留待核对，不再用持仓增量推算成交。
+
+          已部署手机请使用 ths-sim-upgrade.zip 同时升级 App 和后台，单独安装 APK 不会更新策略逻辑。全新手机仍需按 README 部署执行环境并配对。
+          本次功能代码：f01e9b4。
+          NOTES
+          gh release upload v1.1 android/dist/sim-manager.apk ths-sim-upgrade.zip --clobber
+          gh release edit v1.1 --notes-file /tmp/release-notes.txt --latest
