@@ -15,8 +15,8 @@ import java.util.concurrent.*;
 public class Main extends Activity {
     final int ink=0xff173936, green=0xff155d51;
     LinearLayout page, checks, orders;
-    final ScrollView[] screens = new ScrollView[3];
-    final TextView[] tabs = new TextView[3];
+    final ScrollView[] screens = new ScrollView[4];
+    final TextView[] tabs = new TextView[4];
     int selectedTab;
     boolean editing;
     LinearLayout screen(LinearLayout host, int index) {
@@ -35,7 +35,7 @@ public class Main extends Activity {
         android.view.inputmethod.InputMethodManager keyboard =
             (android.view.inputmethod.InputMethodManager)getSystemService(INPUT_METHOD_SERVICE);
         keyboard.hideSoftInputFromWindow(page.getWindowToken(),0);
-        for(int i=0;i<3;i++){
+        for(int i=0;i<screens.length;i++){
             screens[i].setVisibility(i==index?View.VISIBLE:View.GONE);
             tabs[i].setTextColor(i==index?green:0xff6c7b75);
             tabs[i].setTypeface(Typeface.DEFAULT,i==index?Typeface.BOLD:Typeface.NORMAL);
@@ -97,7 +97,16 @@ public class Main extends Activity {
         notice=label(header,"",14,0xffd5eee3,false);
         control=new Button(this);header.addView(control);control.setText("连接中");control.setEnabled(false);
         control.setOnClickListener(v->load(resume?"resume":"pause"));
-        label(page,"策略设置",19,ink,true);
+        LinearLayout actions=card(Color.WHITE);
+        Button check=new Button(this);check.setText("检查并补执行");actions.addView(check);
+        check.setOnClickListener(v->new android.app.AlertDialog.Builder(this)
+            .setMessage("核对委托和持仓，补执行遗漏的买单及已触发的卖单。暂停状态下也会执行本次检查。")
+            .setPositiveButton("检查并补执行",(dialog,which)->load("check"))
+            .setNegativeButton("取消",null).show());
+        checkResult=label(actions,"",14,green,false);
+        LinearLayout homePage=page;
+        page=screen(root,1);
+        label(page,"策略设置",26,ink,true);
         LinearLayout settings=card(Color.WHITE);
         target=input(settings,"建议金额（元）",8194);
         minimum=input(settings,"最低金额（元）",8194);
@@ -121,27 +130,20 @@ public class Main extends Activity {
             }catch(JSONException error){Toast.makeText(this,"设置格式错误",Toast.LENGTH_LONG).show();}
         });
         label(settings,"设置应用于尚未挂出的买单；已有持仓继续使用买入时的止盈止损。",13,green,false);
-        Button check=new Button(this);check.setText("检查并补执行");settings.addView(check);
-        check.setOnClickListener(v->new android.app.AlertDialog.Builder(this)
-            .setMessage("核对委托和持仓，补执行遗漏的买单及已触发的卖单。暂停状态下也会执行本次检查。")
-            .setPositiveButton("检查并补执行",(dialog,which)->load("check"))
-            .setNegativeButton("取消",null).show());
-        checkResult=label(settings,"",14,green,false);
-        LinearLayout settingsPage=page;
-        page=screen(root,1);
+        page=screen(root,2);
         label(page,"盘前持仓核对",26,ink,true);checks=card(Color.WHITE);
         rows(checks,null,true);
-        page=screen(root,2);
+        page=screen(root,3);
         label(page,"最近策略委托",26,ink,true);orders=card(Color.WHITE);
         rows(orders,null,false);
-        page=settingsPage;
+        page=homePage;
         LinearLayout navigation=new LinearLayout(this);
         navigation.setBackgroundColor(Color.WHITE);
         root.addView(navigation,new LinearLayout.LayoutParams(-1,dp(64)));
-        String[] names={"策略设置","盘前持仓核对","最近策略委托"};
-        for(int i=0;i<3;i++){
+        String[] names={"主界面","策略设置","盘前持仓核对","最近策略委托"};
+        for(int i=0;i<screens.length;i++){
             final int index=i;
-            TextView tab=new TextView(this);tab.setText(names[i]);tab.setTextSize(13);
+            TextView tab=new TextView(this);tab.setText(names[i]);tab.setTextSize(12);
             tab.setGravity(android.view.Gravity.CENTER);tab.setContentDescription(names[i]);
             tabs[i]=tab;navigation.addView(tab,new LinearLayout.LayoutParams(0,-1,1));
             tab.setOnClickListener(v->selectTab(index));
