@@ -15,6 +15,38 @@ import java.util.concurrent.*;
 public class Main extends Activity {
     final int ink=0xff173936, green=0xff155d51;
     LinearLayout page, checks, orders;
+    final ScrollView[] screens = new ScrollView[3];
+    final TextView[] tabs = new TextView[3];
+    int selectedTab;
+    boolean editing;
+    LinearLayout screen(LinearLayout host, int index) {
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        screens[index] = scroll;
+        host.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(1);
+        content.setPadding(dp(20),dp(12),dp(20),dp(16));
+        scroll.addView(content);
+        return content;
+    }
+    void selectTab(int index) {
+        selectedTab = index;
+        android.view.inputmethod.InputMethodManager keyboard =
+            (android.view.inputmethod.InputMethodManager)getSystemService(INPUT_METHOD_SERVICE);
+        keyboard.hideSoftInputFromWindow(page.getWindowToken(),0);
+        for(int i=0;i<3;i++){
+            screens[i].setVisibility(i==index?View.VISIBLE:View.GONE);
+            tabs[i].setTextColor(i==index?green:0xff6c7b75);
+            tabs[i].setTypeface(Typeface.DEFAULT,i==index?Typeface.BOLD:Typeface.NORMAL);
+            tabs[i].setBackgroundColor(i==index?0xffe3eee4:Color.WHITE);
+            tabs[i].setSelected(i==index);
+        }
+    }
+    String setting(JSONObject settings,String key,String fallback) {
+        String value=settings.optString(key,"").trim();
+        return value.isEmpty() || value.equals("null") ? fallback : value;
+    }
     TextView state, account, notice;
     Button control;
     EditText target, minimum, maximum, buyTime;
@@ -25,7 +57,15 @@ public class Main extends Activity {
     EditText input(LinearLayout box,String title,int type){
         label(box,title,14,ink,false);
         EditText edit=new EditText(this);edit.setSingleLine(true);edit.setInputType(type);
-        box.addView(edit);return edit;
+        box.addView(edit);
+        edit.addTextChangedListener(new android.text.TextWatcher(){
+            public void beforeTextChanged(CharSequence s,int start,int count,int after){}
+            public void onTextChanged(CharSequence s,int start,int before,int count){
+                if(edit.hasFocus())editing=true;
+            }
+            public void afterTextChanged(android.text.Editable s){}
+        });
+        return edit;
     }
     final Handler timer = new Handler(Looper.getMainLooper());
     final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -48,9 +88,9 @@ public class Main extends Activity {
     public void onCreate(Bundle saved){
         super.onCreate(saved); getWindow().setStatusBarColor(0xfff2f5ef);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
-        ScrollView scroll=new ScrollView(this); scroll.setBackgroundColor(0xfff2f5ef);
-        page=new LinearLayout(this); page.setOrientation(1);page.setPadding(dp(20),dp(22),dp(20),dp(20));
-        scroll.addView(page);setContentView(scroll);
+        LinearLayout root=new LinearLayout(this);root.setOrientation(1);
+        root.setBackgroundColor(0xfff2f5ef);root.setFocusableInTouchMode(true);setContentView(root);
+        page=screen(root,0);
         label(page,"模拟仓管家",29,ink,true);
         LinearLayout header=card(green);account=label(header,"模拟账户",15,0xffd5eee3,false);
         state=label(header,"正在连接",30,Color.WHITE,true);
@@ -63,6 +103,7 @@ public class Main extends Activity {
         minimum=input(settings,"最低金额（元）",8194);
         maximum=input(settings,"最高金额（元）",8194);
         buyTime=input(settings,"每天挂单时间（北京时间 HH:MM）",1);
+        target.setText("10000");minimum.setText("5000");maximum.setText("20000");buyTime.setText("09:20");
         strategy=new Spinner(this);
         strategy.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,
             new String[]{"激进 · 浅回调优先","保守 · 深回调"}));
@@ -86,8 +127,43 @@ public class Main extends Activity {
             .setPositiveButton("检查并补执行",(dialog,which)->load("check"))
             .setNegativeButton("取消",null).show());
         checkResult=label(settings,"",14,green,false);
-        label(page,"盘前持仓核对",19,ink,true);checks=card(Color.WHITE);
-        label(page,"最近策略委托",19,ink,true);orders=card(Color.WHITE);
+        LinearLayout settingsPage=page;
+        page=screen(root,1);
+        label(page,"盘前持仓核对",26,ink,true);checks=card(Color.WHITE);
+        rows(checks,null,true);
+        page=screen(root,2);
+        label(page,"最近策略委托",26,ink,true);orders=card(Color.WHITE);
+        rows(orders,null,false);
+        page=settingsPage;
+        LinearLayout navigation=new LinearLayout(this);
+        navigation.setBackgroundColor(Color.WHITE);
+        root.addView(navigation,new LinearLayout.LayoutParams(-1,dp(64)));
+        String[] names={"策略设置","盘前持仓核对","最近策略委托"};
+        for(int i=0;i<3;i++){
+            final int index=i;
+            TextView tab=new TextView(this);tab.setText(names[i]);tab.setTextSize(13);
+            tab.setGravity(android.view.Gravity.CENTER);tab.setContentDescription(names[i]);
+            tabs[i]=tab;navigation.addView(tab,new LinearLayout.LayoutParams(0,-1,1));
+            tab.setOnClickListener(v->selectTab(index));
+        }
+        if(saved!=null){
+            target.setText(saved.getString("target","10000"));
+            minimum.setText(saved.getString("minimum","5000"));
+            maximum.setText(saved.getString("maximum","20000"));
+            buyTime.setText(saved.getString("time","09:20"));
+            strategy.setSelection(saved.getInt("strategy",0));
+            editing=saved.getBoolean("editing",false);
+        }
+        selectTab(saved==null?0:saved.getInt("tab",0));
+    }
+    protected void onSaveInstanceState(Bundle out){
+        out.putInt("tab",selectedTab);out.putBoolean("editing",editing);
+        out.putString("target",target.getText().toString());
+        out.putString("minimum",minimum.getText().toString());
+        out.putString("maximum",maximum.getText().toString());
+        out.putString("time",buyTime.getText().toString());
+        out.putInt("strategy",strategy.getSelectedItemPosition());
+        super.onSaveInstanceState(out);
     }
     protected void onResume(){super.onResume();visible=true;load("status");}
     protected void onPause(){visible=false;timer.removeCallbacks(poll);super.onPause();}
@@ -126,13 +202,13 @@ public class Main extends Activity {
                     control.setEnabled(true);
                 }else{
                     JSONObject settings=result.optJSONObject("settings");
-                    if(settings!=null && (!settingsLoaded || action.equals("settings"))){
-                        target.setText(settings.optString("target_amount"));
-                        minimum.setText(settings.optString("min_amount"));
-                        maximum.setText(settings.optString("max_amount"));
-                        buyTime.setText(settings.optString("buy_time"));
+                    if(settings!=null && (!settingsLoaded && !editing || action.equals("settings"))){
+                        target.setText(setting(settings,"target_amount","10000"));
+                        minimum.setText(setting(settings,"min_amount","5000"));
+                        maximum.setText(setting(settings,"max_amount","20000"));
+                        buyTime.setText(setting(settings,"buy_time","09:20"));
                         strategy.setSelection(settings.optString("strategy").equals("conservative")?1:0);
-                        settingsLoaded=true;
+                        settingsLoaded=true;editing=false;
                     }
                     if(action.equals("settings"))Toast.makeText(this,"设置已保存",Toast.LENGTH_SHORT).show();
                     checkResult.setText(result.optString("check_result"));

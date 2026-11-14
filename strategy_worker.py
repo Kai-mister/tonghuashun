@@ -56,10 +56,16 @@ class Worker:
             raise RuntimeError("策略账本绑定了其他模拟账户")
         with db:
             db.execute("INSERT OR IGNORE INTO identity VALUES (?)", (sim.account,))
+            db.execute("CREATE TABLE IF NOT EXISTS migrations(name TEXT PRIMARY KEY)")
+            if not db.execute("SELECT 1 FROM migrations WHERE name='verified_ownership'").fetchone():
+                changed = db.execute("""UPDATE orders SET filled=0, done=0
+                    WHERE side='买入' AND done=1 AND stamp IS NULL""").rowcount
+                if changed:
+                    log.warning("%d 笔旧持仓推算结果已撤销，等待成交核对", changed)
+                db.execute("INSERT INTO migrations VALUES ('verified_ownership')")
 
     def submit(self, key, plan, side, qty, price):
         from datetime import timedelta
-        baseline = self.sim.position(plan["code"])["total"] if side == "买入" else None
         def journal(name):
             nonlocal order_id
             now = datetime.now(SHANGHAI)
@@ -75,8 +81,6 @@ class Worker:
                     VALUES (?,?,?,?,?,?,?,?)""", (key,side,now.date().isoformat(),
                     (now-timedelta(seconds=3)).strftime("%H:%M:%S"),
                     (now+timedelta(seconds=30)).strftime("%H:%M:%S"), name,qty,str(price))).lastrowid
-                if baseline is not None:
-                    self.db.execute("INSERT INTO buy_snapshots VALUES (?,?)", (order_id,baseline))
         order_id = None
         receipt = self.sim.submit(side, plan["code"], qty, price, journal)
         with self.db:
@@ -157,12 +161,12 @@ class Worker:
         if not checked or checked["day"] != day:
             holding = self.sim.position(p["code"])
             with self.db:
-                if needs_recovery:
-                    bought = self.recover_buy(key, p["code"], buys, sold, holding["total"])
                 self.db.execute("INSERT OR REPLACE INTO morning_checks VALUES (?,?,?,?)",
                                 (key,day,holding["total"],holding["available"]))
             log.info("模拟持仓核对 %s 总数 %d 可卖 %d 策略余额 %d",
                      key, holding["total"], holding["available"], bought-sold)
+        if needs_recovery:
+            self.errors.append(f"{key} 买单成交待核对，仅管理已核实成交数量")
         if bought <= sold:
             self.watch_status[key] = (now, 0)
             return
@@ -173,8 +177,7 @@ class Worker:
             if (not market_open(now) and previous[1]) or (not previous[1] and elapsed < 60):
                 return
         quote = self.sim.quote(p["code"])
-        protected = self.protected_shares(p["code"])
-        available = min(bought - sold, quote["available"], max(0, quote["total"] - protected))
+        available = max(0, min(bought - sold, quote["available"], quote["total"]))
         self.watch_status[key] = (now, available)
         if not previous or previous[0].date() != now.date() or previous[1] != available:
             log.info("模拟策略监控 %s，可卖 %s 股", key, available)
@@ -191,31 +194,6 @@ class Worker:
             if progress["can_submit"]:
                 self.submit(record["id"],p,"卖出",progress["can_submit"],quote["limit"])
 
-    def protected_shares(self, code):
-        # Manually tested position, independent of every strategy plan.
-        return 100 if self.sim.account == "**1326" and code == "002222" else 0
-
-    def recover_buy(self, key, code, buys, sold, total):
-        bought = sum(o["filled"] for o in buys)
-        if len(buys) != 1:
-            return bought
-        buy = buys[0]
-        snapshot = self.db.execute("SELECT total_before FROM buy_snapshots WHERE order_id=?",
-                                   (buy["id"],)).fetchone()
-        if not snapshot:
-            log.warning("旧委托 %s 缺少买前持仓基准，仅使用已核实成交", key)
-            return bought
-        # Another strategy transaction in the same stock invalidates a simple delta.
-        others = self.db.execute("""
-            SELECT 1 FROM orders o JOIN plans p ON p.id=o.plan
-            WHERE o.plan<>? AND o.id>? AND json_extract(p.data,'$.code')=? LIMIT 1
-        """, (key,buy["id"],code)).fetchone()
-        inferred = total - max(snapshot[0], self.protected_shares(code)) + sold
-        if others or not bought <= inferred <= buy["qty"]:
-            log.warning("模拟持仓变化不能唯一归入买单 %s", key)
-            return bought
-        self.db.execute("UPDATE orders SET filled=?, done=1 WHERE id=?", (inferred,buy["id"]))
-        return inferred
 
 
 def buy_window(now):

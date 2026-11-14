@@ -84,26 +84,48 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual(db.execute("select filled,done from orders where side='卖出'").fetchone()[:], (200,1))
         db.close()
 
-    def test_disconnected_buy_recovery_excludes_manual_shares(self):
+    def test_only_verified_strategy_shares_are_managed(self):
         from unittest.mock import Mock
-        for total, free, expected_fill, expected_free in [
-                (100, 100, 0, 0), (300, 300, 200, 200), (200, 70, 100, 70)]:
-            with self.subTest(total=total), sqlite3.connect(":memory:") as db:
-                sim = FakeSim()
-                sim.account = "**1326"
-                sim.position = Mock(return_value=dict(total=total, available=free))
-                sim.quote = Mock(return_value=dict(total=total, available=free))
-                worker = Worker(sim, db)
-                key = "2026-11-13/002222"
-                plan = dict(code="002222", planned_buy_date="2026-11-13")
-                db.execute("INSERT INTO plans VALUES (?,?,NULL)", (key,json.dumps(plan)))
-                db.execute("INSERT INTO orders(plan,side,day,qty) VALUES (?,'买入',?,200)",
-                           (key,plan["planned_buy_date"]))
-                db.execute("INSERT INTO buy_snapshots VALUES (1,100)")
-                worker.tick(datetime(2026,11,16,9,16,tzinfo=SHANGHAI))
-                sim.position.assert_called_once_with("002222")
-                self.assertEqual(db.execute("SELECT filled FROM orders").fetchone()[0], expected_fill)
-                self.assertEqual(worker.watch_status[key][1], expected_free)
+        # Existing/manual shares, lost receipts, partial fills, and account tails
+        # must not change ownership. Available quantity only caps that ownership.
+        for account in ["test", "**1326"]:
+            for total, free, filled, sold, expected in [
+                    (100, 100, 0, 0, 0), (300, 300, 0, 0, 0),
+                    (300, 300, 200, 0, 200), (200, 70, 100, 0, 70),
+                    (900, 900, 200, 100, 100), (50, 50, 200, 0, 50)]:
+                with self.subTest(account=account, total=total, filled=filled, sold=sold), sqlite3.connect(":memory:") as db:
+                    sim = FakeSim()
+                    sim.account = account
+                    sim.position = Mock(return_value=dict(total=total, available=free))
+                    sim.quote = Mock(return_value=dict(total=total, available=free))
+                    worker = Worker(sim, db)
+                    key = "2026-11-13/002222"
+                    plan = dict(code="002222", planned_buy_date="2026-11-13")
+                    db.execute("INSERT INTO plans VALUES (?,?,NULL)", (key,json.dumps(plan)))
+                    db.execute("INSERT INTO orders(plan,side,day,qty,filled,stamp) VALUES (?,'买入',?,200,?,?)",
+                               (key,plan["planned_buy_date"],filled,"09:20:00" if filled else None))
+                    if sold:
+                        db.execute("INSERT INTO orders(plan,side,day,qty,filled,done) VALUES (?,'卖出',?,100,?,1)",
+                                   (key,plan["planned_buy_date"],sold))
+                    db.execute("INSERT INTO buy_snapshots VALUES (1,100)")
+                    worker.tick(datetime(2026,11,16,9,16,tzinfo=SHANGHAI))
+                    sim.position.assert_called_once_with("002222")
+                    self.assertEqual(db.execute("SELECT filled,done FROM orders WHERE side='买入'").fetchone()[:], (filled,0))
+                    self.assertEqual(worker.watch_status[key][1], expected)
+                    self.assertTrue(worker.errors)
+
+    def test_upgrade_revokes_inferred_fills_but_preserves_verified_fills(self):
+        with sqlite3.connect(":memory:") as db:
+            sim = FakeSim()
+            Worker(sim, db)
+            db.execute("DELETE FROM migrations")
+            db.execute("INSERT INTO orders(side,qty,filled,done) VALUES ('买入',200,200,1)")
+            db.execute("INSERT INTO orders(side,qty,filled,done,stamp) VALUES ('买入',200,100,1,'09:20:00')")
+            Worker(sim, db)
+            self.assertEqual([tuple(r) for r in db.execute("SELECT filled,done FROM orders ORDER BY id")],
+                             [(0,0),(100,1)])
+            Worker(sim, db)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM migrations").fetchone()[0],1)
 
     def test_triggers(self):
         for price, stamp, reason in [("48","10:10","stop_loss"),("52","10:10","take_profit"),
