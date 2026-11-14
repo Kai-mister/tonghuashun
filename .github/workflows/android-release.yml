@@ -22,10 +22,11 @@ jobs:
           set -eu
           apk=android/dist/sim-manager.apk
           test -s "$apk"
+          zip -q ths-sim-upgrade.zip "$apk" strategy_settings.py premarket.py strategy_worker.py             phone/manager.py phone/local.py ths/simulator.py scripts/upgrade-phone.sh README.md
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$apk" --clobber
+            gh release upload "$TAG" "$apk" ths-sim-upgrade.zip --clobber
           else
-            gh release create "$TAG" "$apk" --verify-tag \
+            gh release create "$TAG" "$apk" ths-sim-upgrade.zip --verify-tag \
               --title "模拟仓管家 $TAG" \
-              --notes "Android 安装包见下方 sim-manager.apk。首次使用请按仓库 README 部署本机服务并配对。"
+              --notes "Android 安装包见下方 sim-manager.apk。新增金额、时间、策略设置及检查补执行。已有手机请使用 ths-sim-upgrade.zip 同步升级后台。首次使用请按仓库 README 部署本机服务并配对。"
           fi

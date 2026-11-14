@@ -1,4 +1,5 @@
 """Authenticated loopback control channel for the installed Android manager."""
+from strategy_settings import load, save
 import hmac
 import json
 import os
@@ -45,7 +46,9 @@ def snapshot():
         checks = [dict(r) for r in db.execute("""SELECT plan, day, total, available FROM morning_checks
                     ORDER BY day DESC, plan LIMIT 20""")]
     return dict(status=status, active=active, paused=paused, account=account[0] if account else "",
-                orders=orders, checks=checks)
+                orders=orders, checks=checks, settings=load(STATE / "settings.json"),
+                check_result="等待执行" if (STATE / "check-request").exists() else
+                ((STATE / "check-result").read_text() if (STATE / "check-result").exists() else ""))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -61,7 +64,16 @@ class Handler(BaseHTTPRequestHandler):
         if not hmac.compare_digest(self.headers.get("Authorization",""), "Bearer "+TOKEN):
             return self.reply(403, {})
         try:
-            if action == "pause":
+            if action == "settings":
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 2048:
+                    raise ValueError("设置请求长度无效")
+                save(STATE / "settings.json", json.loads(self.rfile.read(length)))
+            elif action == "check":
+                if not running():
+                    raise ValueError("请先启动策略")
+                (STATE / "check-request").touch(mode=0o600)
+            elif action == "pause":
                 (STATE / "paused").touch(mode=0o600)
             elif action == "resume":
                 if not running():
@@ -70,7 +82,9 @@ class Handler(BaseHTTPRequestHandler):
                     subprocess.run(["/system/bin/sh","phone/background.sh"],env=env,check=True,timeout=10)
                 (STATE / "paused").unlink(missing_ok=True)
             return self.reply(200,snapshot())
-        except (OSError, ValueError, sqlite3.Error, subprocess.SubprocessError):
+        except ValueError as error:
+            return self.reply(400, {"error":str(error)})
+        except (OSError, sqlite3.Error, subprocess.SubprocessError):
             return self.reply(503, {"error":"无法读取状态或启动策略"})
 
     def do_GET(self):
@@ -79,7 +93,7 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(404,{})
 
     def do_POST(self):
-        if self.path in ("/pause","/resume"):
+        if self.path in ("/pause","/resume","/settings","/check"):
             return self.handle_api(self.path[1:])
         self.reply(404,{})
 

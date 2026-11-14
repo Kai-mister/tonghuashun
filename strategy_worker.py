@@ -11,6 +11,7 @@ from pathlib import Path
 
 from premarket import SHANGHAI, exit_progress, exit_reason, select_plans
 from stock_api import fetch_plans
+from strategy_settings import load, validate
 from ths.simulator import Simulator
 
 log = logging.getLogger(__name__)
@@ -34,6 +35,9 @@ class Worker:
         self.cache_date = None
         self.cached_plans = []
         self.watch_status = {}
+        self.settings = validate({})
+        self.manual = False
+        self.errors = []
         db.row_factory = sqlite3.Row
         db.executescript("""
           CREATE TABLE IF NOT EXISTS plans(id TEXT PRIMARY KEY, data TEXT NOT NULL, exit TEXT);
@@ -60,7 +64,8 @@ class Worker:
             nonlocal order_id
             now = datetime.now(SHANGHAI)
             if side == "买入" and not (now.date().isoformat()==plan["planned_buy_date"]
-                                      and now.strftime("%H:%M")=="09:20"):
+                                      and (now.strftime("%H:%M")==self.settings["buy_time"]
+                                           or self.manual and buy_window(now))):
                 raise RuntimeError("盘前挂单窗口已结束")
             if side == "卖出" and not market_open(now):
                 raise RuntimeError("当前不在交易时段")
@@ -98,33 +103,41 @@ class Worker:
                     if Decimal(quote["limit"]) < Decimal(order["price"]):
                         self.sim.cancel(row, plan["code"])
 
-    def tick(self, now):
+    def tick(self, now, manual=False):
+        self.manual = manual
+        self.errors = []
+        if manual:
+            self.reconcile(now)
         day = now.date().isoformat()
         hm = now.strftime("%H:%M")
         if now.weekday() >= 5:
             return
-        if "09:19" <= hm <= "09:20":
-            if self.cache_date != day or not self.cached_plans:
-                self.cached_plans = select_plans(fetch_plans()["stocks"], now.date())
-                self.cache_date = day
+        if hm == self.settings["buy_time"] or manual and buy_window(now):
+            if self.cache_date != (day, str(self.settings)) or not self.cached_plans or manual:
+                self.cached_plans = select_plans(fetch_plans()["stocks"], now.date(), self.settings)
+                self.cache_date = (day, str(self.settings))
             for p in self.cached_plans:
                 if not p["quantity"]:
                     continue
                 key = day + "/" + p["code"]
-                if hm == "09:20" and not self.db.execute("SELECT 1 FROM orders WHERE plan=?", (key,)).fetchone():
+                if not self.db.execute("SELECT 1 FROM orders WHERE plan=?", (key,)).fetchone():
                     with self.db:
                         self.db.execute("INSERT OR REPLACE INTO plans VALUES (?,?,NULL)",(key,json.dumps(p)))
                     try:
                         self.submit(key,p,"买入",p["quantity"],p["limit_price"])
-                    except Exception:
+                    except Exception as error:
+                        self.errors.append(f"{p['code']} 买单未完成：{error}")
                         log.exception("模拟买单未完成 %s", key)
         self.reconcile(now)
+        if manual:
+            self.watch_status.clear()
         if not ("09:15" <= hm < "09:20" or market_open(now)):
             return
         for record in self.db.execute("SELECT * FROM plans").fetchall():
             try:
                 self.monitor(record, now)
-            except Exception:
+            except Exception as error:
+                self.errors.append(f"{record['id']} 持仓或卖出异常：{error}")
                 log.exception("模拟持仓查询或退出异常 %s", record["id"])
 
     def monitor(self, record, now):
@@ -205,6 +218,11 @@ class Worker:
         return inferred
 
 
+def buy_window(now):
+    hm = now.strftime("%H:%M")
+    return now.weekday() < 5 and ("09:15" <= hm < "11:30" or "13:00" <= hm < "15:00")
+
+
 def market_open(now):
     hm = now.strftime("%H:%M")
     return now.weekday() < 5 and ("09:30" <= hm < "11:30" or "13:00" <= hm < "15:00")
@@ -230,7 +248,25 @@ def run(trader, path):
                 pending = path.parent / "heartbeat.tmp"
                 pending.write_text(f"{os.getpid()} {'paused' if paused else 'running'}")
                 pending.replace(heartbeat)
-                if not paused:
+                worker.settings = load(path.parent / "settings.json")
+                request = path.parent / "check-request"
+                if request.exists():
+                    request.unlink()
+                    result = path.parent / "check-result"
+                    try:
+                        now = datetime.now(SHANGHAI)
+                        worker.tick(now, manual=True)
+                        unresolved = db.execute("SELECT COUNT(*) FROM orders WHERE done=0 AND stamp IS NULL").fetchone()[0]
+                        message = "检查完成" if buy_window(now) else "检查完成，当前非交易时段，未补单"
+                        if unresolved:
+                            message += f"，{unresolved} 笔回执待核对，已保留原委托"
+                        if worker.errors:
+                            message += "；" + "；".join(worker.errors)
+                        result.write_text(message)
+                    except Exception as error:
+                        result.write_text("检查失败：" + str(error))
+                        raise
+                elif not paused:
                     worker.tick(datetime.now(SHANGHAI))
             except Exception:
                 log.exception("模拟策略执行异常")

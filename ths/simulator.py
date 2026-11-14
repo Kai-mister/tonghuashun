@@ -28,7 +28,18 @@ class Simulator:
             raise RuntimeError("模拟账号已变化")
         self.account = current
 
+    def ensure_screen_on(self):
+        if self.d.info["screenOn"]:
+            return
+        self.d.screen_on()
+        for _ in range(10):
+            if self.d.info["screenOn"]:
+                return
+            time.sleep(.2)
+        raise RuntimeError("屏幕未能唤醒")
+
     def tab(self, name):
+        self.ensure_screen_on()
         if self.d.app_current().get("package") != self.pkg:
             self.d.app_start(self.pkg)
         if self.title("当日委托") or self.title("当日成交"):

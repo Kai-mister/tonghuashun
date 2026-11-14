@@ -7,12 +7,14 @@ import json
 from zoneinfo import ZoneInfo
 
 from stock_api import fetch_plans
+from strategy_settings import validate
 
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
-def order_quantity(code, price):
+def order_quantity(code, price, settings=None):
+    settings = validate(settings or {})
     if code.startswith(("688", "689")):
         minimum, step, maximum = 200, 1, 100000
     elif code.startswith(("92", "43", "83", "87", "88")):
@@ -22,20 +24,21 @@ def order_quantity(code, price):
     else:
         raise ValueError(f"无法确定 {code} 的申报单位")
     unit_cost = price * step
-    low = max(minimum // step, int((5000 / unit_cost).to_integral_value(rounding=ROUND_CEILING)))
-    high = min(maximum // step, int((20000 / unit_cost).to_integral_value(rounding=ROUND_FLOOR)))
+    low = max(minimum // step, int((Decimal(settings["min_amount"]) / unit_cost).to_integral_value(rounding=ROUND_CEILING)))
+    high = min(maximum // step, int((Decimal(settings["max_amount"]) / unit_cost).to_integral_value(rounding=ROUND_FLOOR)))
     if low > high:
         return 0
-    nearest = int((10000 / unit_cost).to_integral_value(rounding=ROUND_HALF_DOWN))
+    nearest = int((Decimal(settings["target_amount"]) / unit_cost).to_integral_value(rounding=ROUND_HALF_DOWN))
     return step * min(high, max(low, nearest))
 
 
-def select_plans(stocks, buy_date):
+def select_plans(stocks, buy_date, settings=None):
+    settings = validate(settings or {})
     plans = []
     for stock in stocks:
         if stock["planned_buy_date"] != buy_date.isoformat():
             continue
-        tier = "shallow" if stock.get("shallow") else "deep"
+        tier = "shallow" if settings["strategy"] == "aggressive" and stock.get("shallow") else "deep"
         levels = stock.get(tier)
         if not isinstance(levels, dict):
             raise ValueError(f"{stock['code']} 缺少 {tier} 价格")
@@ -49,10 +52,10 @@ def select_plans(stocks, buy_date):
         except (KeyError, InvalidOperation, ValueError) as error:
             raise ValueError(f"{stock['code']} 的 {tier} 价格无效：{error}") from error
         limit = prices["buy_high"]
-        quantity = order_quantity(stock["code"], limit)
+        quantity = order_quantity(stock["code"], limit, settings)
         sell_date = date.fromisoformat(stock["planned_sell_date"])
         plans.append({
-            "buy_at": datetime.combine(buy_date, time(9, 20), SHANGHAI).isoformat(),
+            "buy_at": datetime.combine(buy_date, time.fromisoformat(settings["buy_time"]), SHANGHAI).isoformat(),
             "liquidate_at": datetime.combine(sell_date, time(14, 50), SHANGHAI).isoformat(),
             "limit_price": str(limit), "quantity": quantity,
             "order_value": str(quantity * limit),

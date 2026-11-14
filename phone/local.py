@@ -70,6 +70,18 @@ class Device:
     def press(self, key):
         rpc("pressKey", key)
 
+    @property
+    def info(self):
+        return rpc("deviceInfo")
+
+    def screen_on(self):
+        rpc("wakeUp")
+        env = dict(os.environ)
+        env.pop("LD_LIBRARY_PATH", None)
+        subprocess.run(["/system/bin/cmd", "window", "dismiss-keyguard"],
+                       env=env, timeout=4, check=False, stdout=subprocess.DEVNULL)
+        time.sleep(.4)
+
     def app_current(self):
         return {"package":rpc("deviceInfo")["currentPackageName"]}
 
@@ -92,6 +104,8 @@ class LocalTrader:
         marker = self.d(text="模拟练习区",packageName=pkg)
         if not marker.exists:
             self.d(text="交易",packageName=pkg).click()
+            if marker.wait(1):
+                return True
             self.d(text="模拟",packageName=pkg).click()
         return marker.wait(4)
 
