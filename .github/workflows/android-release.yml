@@ -22,7 +22,7 @@ jobs:
           set -eu
           apk=android/dist/sim-manager.apk
           test -s "$apk"
-          zip -q ths-sim-upgrade.zip "$apk" strategy_settings.py premarket.py strategy_worker.py             phone/manager.py phone/local.py ths/simulator.py scripts/upgrade-phone.sh README.md
+          zip -q ths-sim-upgrade.zip "$apk" strategy_settings.py premarket.py strategy_worker.py             stock_api.py phone/manager.py phone/local.py phone/backend.py phone/update.py phone/start.sh phone/background.sh ths/__init__.py ths/simulator.py scripts/upgrade-phone.sh scripts/bootstrap-phone.py README.md
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$apk" ths-sim-upgrade.zip --clobber
           else

@@ -6,23 +6,14 @@ command -v adb >/dev/null
 adb -d shell 'test -x /data/local/tmp/ths-sim/python && test -s /data/local/tmp/ths-sim/state/manager.key'
 adb -d install -r android/dist/sim-manager.apk
 adb -d shell 'mkdir -p /data/local/tmp/ths-sim/upgrade/phone /data/local/tmp/ths-sim/upgrade/ths'
-for file in strategy_settings.py premarket.py strategy_worker.py phone/manager.py phone/local.py ths/simulator.py; do
+for file in strategy_settings.py premarket.py strategy_worker.py stock_api.py phone/manager.py phone/local.py phone/backend.py phone/update.py phone/start.sh phone/background.sh ths/__init__.py ths/simulator.py; do
     adb -d push "$file" "/data/local/tmp/ths-sim/upgrade/$file"
 done
+adb -d push scripts/bootstrap-phone.py /data/local/tmp/ths-sim/upgrade/bootstrap.py
 adb -d shell '
 set -eu
 cd /data/local/tmp/ths-sim
-for service in worker manager; do
-    if [ -s "state/$service.pid" ]; then
-        pid=$(cat "state/$service.pid")
-        if [ -r "/proc/$pid/cmdline" ] && tr "\000" " " <"/proc/$pid/cmdline" | grep -Fq "phone/"; then
-            kill "$pid"
-        fi
-    fi
-done
-sleep 1
-for file in strategy_settings.py premarket.py strategy_worker.py phone/manager.py phone/local.py ths/simulator.py; do
-    mv "upgrade/$file" "$file"
-done
-sh phone/background.sh
+export HOME="$PWD" PYTHONHOME="$PWD/prefix" PYTHONPATH="$PWD" LD_LIBRARY_PATH="$PWD/prefix/lib"
+export SSL_CERT_FILE="$PWD/ca.pem" PYTHONTZPATH="$PWD/zoneinfo" TZ=Asia/Shanghai
+./python upgrade/bootstrap.py
 '

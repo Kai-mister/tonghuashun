@@ -6,9 +6,10 @@ cd "$(dirname "$0")"
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 mkdir -p "$out/classes" "$out/dex" dist
+python3 ../scripts/bundle-backend.py "$out"
 "$BUILD_TOOLS/aapt2" compile --dir res -o "$out/resources.zip"
-"$BUILD_TOOLS/aapt2" link -I "$ANDROID_JAR" --manifest AndroidManifest.xml -o "$out/app.apk" "$out/resources.zip"
-javac --release 8 -classpath "$ANDROID_JAR" -d "$out/classes" src/cn/local/simmanager/*.java
+"$BUILD_TOOLS/aapt2" link -I "$ANDROID_JAR" --manifest AndroidManifest.xml -A "$out/assets" -o "$out/app.apk" "$out/resources.zip"
+javac --release 8 -classpath "$ANDROID_JAR" -d "$out/classes" src/cn/local/simmanager/*.java "$out/BuildBackend.java"
 jar cf "$out/code.jar" -C "$out/classes" .
 "$BUILD_TOOLS/d8" --min-api 26 --lib "$ANDROID_JAR" --output "$out/dex" "$out/code.jar"
 (cd "$out/dex" && zip -q "$out/app.apk" classes.dex)

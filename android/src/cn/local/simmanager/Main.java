@@ -48,7 +48,9 @@ public class Main extends Activity {
         return value.isEmpty() || value.equals("null") ? fallback : value;
     }
     TextView state, account, notice;
-    Button control;
+    Button control, save, check, upgrade;
+    TextView backendNotice;
+    boolean compatible, upgrading;
     EditText target, minimum, maximum, buyTime;
     Spinner strategy;
     TextView checkResult;
@@ -97,8 +99,16 @@ public class Main extends Activity {
         notice=label(header,"",14,0xffd5eee3,false);
         control=new Button(this);header.addView(control);control.setText("连接中");control.setEnabled(false);
         control.setOnClickListener(v->load(resume?"resume":"pause"));
+        LinearLayout maintenance=card(Color.WHITE);
+        backendNotice=label(maintenance,"正在检查后台版本",14,ink,false);
+        upgrade=new Button(this);upgrade.setText("更新手机后台");maintenance.addView(upgrade);
+        upgrade.setVisibility(View.GONE);
+        upgrade.setOnClickListener(v->new android.app.AlertDialog.Builder(this)
+            .setMessage("更新为此 App 内置的后台版本。等待当前操作结束后重启后台，保留设置、账本和启停状态，不会补下错过的买单。")
+            .setPositiveButton("更新后台",(dialog,which)->load("upgrade"))
+            .setNegativeButton("取消",null).show());
         LinearLayout actions=card(Color.WHITE);
-        Button check=new Button(this);check.setText("检查并补执行");actions.addView(check);
+        check=new Button(this);check.setEnabled(false);check.setText("检查并补执行");actions.addView(check);
         check.setOnClickListener(v->new android.app.AlertDialog.Builder(this)
             .setMessage("核对委托和持仓，补执行遗漏的买单及已触发的卖单。暂停状态下也会执行本次检查。")
             .setPositiveButton("检查并补执行",(dialog,which)->load("check"))
@@ -117,7 +127,7 @@ public class Main extends Activity {
         strategy.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,
             new String[]{"激进 · 浅回调优先","保守 · 深回调"}));
         settings.addView(strategy);
-        Button save=new Button(this);save.setText("保存设置");settings.addView(save);
+        save=new Button(this);save.setEnabled(false);save.setText("保存设置");settings.addView(save);
         save.setOnClickListener(v->{
             try{
                 JSONObject body=new JSONObject();
@@ -172,37 +182,75 @@ public class Main extends Activity {
     protected void onDestroy(){io.shutdownNow();super.onDestroy();}
     void load(String action){
         if(busy||!visible)return;
+        if(!action.equals("status")&&!action.equals("upgrade")&&!compatible){
+            Toast.makeText(this,"请先完成后台版本检查或升级",Toast.LENGTH_LONG).show();return;
+        }
         timer.removeCallbacks(poll);busy=true;
-        if(!action.equals("status"))control.setEnabled(false);
+        control.setEnabled(false);save.setEnabled(false);check.setEnabled(false);upgrade.setEnabled(false);
         final String payload=settingsBody;
         io.execute(()->{
             JSONObject data=null;
             try{
                 HttpURLConnection c=(HttpURLConnection)new URL("http://127.0.0.1:18735/"+action).openConnection();
                 try{
-                    c.setConnectTimeout(2500);c.setReadTimeout(10000);
+                    c.setConnectTimeout(2500);c.setReadTimeout(15000);
                     c.setRequestProperty("Authorization","Bearer "+getSharedPreferences("local",0).getString("key",""));
                     if(!action.equals("status"))c.setRequestMethod("POST");
+                    if(action.equals("upgrade")){
+                        c.setDoOutput(true);c.setRequestProperty("Content-Type","application/json");
+                        try(InputStream in=getAssets().open("backend.json");OutputStream out=c.getOutputStream()){
+                            byte[] buffer=new byte[8192];int length;
+                            while((length=in.read(buffer))!=-1)out.write(buffer,0,length);
+                        }
+                    }
                     if(action.equals("settings")){
                         c.setDoOutput(true);c.setRequestProperty("Content-Type","application/json");
                         try(OutputStream out=c.getOutputStream()){out.write(payload.getBytes("UTF-8"));}
                     }
-                    InputStream stream=c.getResponseCode()<400?c.getInputStream():c.getErrorStream();
+                    int http=c.getResponseCode();
+                    InputStream stream=http<400?c.getInputStream():c.getErrorStream();
                     try(BufferedReader r=new BufferedReader(new InputStreamReader(stream,"UTF-8"))){
-                        data=new JSONObject(r.readLine());
+                        StringBuilder body=new StringBuilder();String line;
+                        while((line=r.readLine())!=null)body.append(line);
+                        data=new JSONObject(body.toString());
+                        if(http<200||http>=300)throw new IOException(data.optString("error","请求失败（HTTP "+http+"），后台可能需要升级"));
+                        if(action.equals("upgrade")){
+                            if(!data.optBoolean("accepted"))throw new IOException("后台未确认升级请求");
+                        }else if(!data.has("status"))throw new IOException("后台响应无效，操作未确认成功");
+                        if(action.equals("settings")&&!data.has("settings"))throw new IOException("后台未返回保存结果，设置未确认成功");
                     }
                 }finally{c.disconnect();}
-            }catch(Exception ignored){}
+            }catch(Exception error){
+                data=new JSONObject();
+                try{data.put("error",error.getMessage()==null?"无法连接本机后台":error.getMessage());}catch(JSONException ignored){}
+            }
             final JSONObject result=data;
             runOnUiThread(()->{
                 busy=false;if(!visible||isDestroyed())return;
-                if(result==null){
-                    state.setText("服务未连接");notice.setText("请检查本机管理服务和设备配对。");
-                    control.setEnabled(false);control.setText("等待连接");
-                }else if(result.has("error")){
-                    Toast.makeText(this,result.optString("error"),Toast.LENGTH_LONG).show();
-                    control.setEnabled(true);
+                if(result==null||result.has("error")){
+                    compatible=false;
+                    state.setText(upgrading?"后台更新中":"服务不可用");
+                    String message=result==null?"无法连接本机后台":result.optString("error");
+                    notice.setText(message);backendNotice.setText(upgrading?"正在重连后台，请稍候；长时间未恢复请通过 USB 修复。":"连接或操作失败："+message);
+                    control.setEnabled(false);save.setEnabled(false);check.setEnabled(false);
+                    upgrade.setEnabled(false);
+                    if(!action.equals("status"))Toast.makeText(this,message,Toast.LENGTH_LONG).show();
+                }else if(action.equals("upgrade")){
+                    upgrading=true;compatible=false;backendNotice.setText("升级请求已接收，正在等待后台重启和校验");
                 }else{
+                    JSONObject update=result.optJSONObject("update");
+                    String phase=update==null?"":update.optString("phase");
+                    upgrading=phase.equals("updating");
+                    compatible=result.optInt("api_version")==BuildBackend.API_VERSION &&
+                        result.optString("backend_digest").equals(BuildBackend.DIGEST) && !upgrading;
+                    boolean canUpgrade=result.optInt("update_protocol")==1;
+                    String detail=upgrading?"后台正在更新，请稍候":compatible?"后台版本已匹配 · "+BuildBackend.DIGEST.substring(0,12):
+                        canUpgrade?"后台版本与 App 不一致，请更新手机后台":"旧后台不支持 App 内升级，请先通过 USB 升级一次";
+                    if(update!=null&&!update.optString("message").isEmpty())detail+="\n"+update.optString("message");
+                    backendNotice.setText(detail);
+                    upgrade.setVisibility(!compatible&&canUpgrade?View.VISIBLE:View.GONE);
+                    upgrade.setEnabled(!upgrading&&canUpgrade);
+                    save.setEnabled(compatible);check.setEnabled(compatible);
                     JSONObject settings=result.optJSONObject("settings");
                     if(settings!=null && (!settingsLoaded && !editing || action.equals("settings"))){
                         target.setText(setting(settings,"target_amount","10000"));
@@ -212,12 +260,12 @@ public class Main extends Activity {
                         strategy.setSelection(settings.optString("strategy").equals("conservative")?1:0);
                         settingsLoaded=true;editing=false;
                     }
-                    if(action.equals("settings"))Toast.makeText(this,"设置已保存",Toast.LENGTH_SHORT).show();
+                    if(action.equals("settings")&&compatible)Toast.makeText(this,"设置已保存",Toast.LENGTH_SHORT).show();
                     checkResult.setText(result.optString("check_result"));
-                    state.setText(result.optString("status"));account.setText("模拟账户  "+result.optString("account"));
+                    state.setText(compatible?result.optString("status"):upgrading?"后台更新中":"需要更新后台");account.setText("模拟账户  "+result.optString("account"));
                     resume=result.optBoolean("paused")||!result.optBoolean("active");
-                    control.setText(resume?"启动 / 恢复策略":"暂停策略");control.setEnabled(true);
-                    notice.setText("暂停在本轮结束后生效，已有委托继续有效。");
+                    control.setText(resume?"启动 / 恢复策略":"暂停策略");control.setEnabled(compatible);
+                    notice.setText(compatible?"暂停在本轮结束后生效，已有委托继续有效。":"后台未匹配，策略操作暂不可用；已有后台任务不受此页面禁用影响。");
                     rows(checks,result.optJSONArray("checks"),true);rows(orders,result.optJSONArray("orders"),false);
                 }
                 timer.postDelayed(poll,4000);

@@ -1,5 +1,7 @@
 """Authenticated loopback control channel for the installed Android manager."""
 from strategy_settings import load, save
+from phone.backend import API_VERSION, UPDATE_PROTOCOL, MAX_BUNDLE, installed_digest
+from phone.update import launch
 import hmac
 import json
 import os
@@ -8,6 +10,7 @@ import sqlite3
 import subprocess
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+BACKEND_DIGEST = installed_digest()
 STATE = Path("state")
 TOKEN = (STATE / "manager.key").read_text().strip()
 if len(TOKEN) < 32:
@@ -45,7 +48,9 @@ def snapshot():
                     FROM orders ORDER BY id DESC LIMIT 20""")]
         checks = [dict(r) for r in db.execute("""SELECT plan, day, total, available FROM morning_checks
                     ORDER BY day DESC, plan LIMIT 20""")]
-    return dict(status=status, active=active, paused=paused, account=account[0] if account else "",
+    update = STATE / "update-result.json"
+    return dict(api_version=API_VERSION, backend_digest=BACKEND_DIGEST, update_protocol=UPDATE_PROTOCOL,
+                update=json.loads(update.read_text()) if update.exists() else {}, status=status, active=active, paused=paused, account=account[0] if account else "",
                 orders=orders, checks=checks, settings=load(STATE / "settings.json"),
                 check_result="等待执行" if (STATE / "check-request").exists() else
                 ((STATE / "check-result").read_text() if (STATE / "check-result").exists() else ""))
@@ -64,6 +69,15 @@ class Handler(BaseHTTPRequestHandler):
         if not hmac.compare_digest(self.headers.get("Authorization",""), "Bearer "+TOKEN):
             return self.reply(403, {})
         try:
+            if action == "upgrade":
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= MAX_BUNDLE:
+                    raise ValueError("升级包大小无效")
+                launch(self.rfile.read(length))
+                return self.reply(202, {"accepted": True})
+            update = STATE / "update-result.json"
+            if action != "status" and update.exists() and json.loads(update.read_text()).get("phase") == "updating":
+                raise ValueError("后台正在升级，请等待完成")
             if action == "settings":
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 0 < length <= 2048:
@@ -93,7 +107,7 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(404,{})
 
     def do_POST(self):
-        if self.path in ("/pause","/resume","/settings","/check"):
+        if self.path in ("/pause","/resume","/settings","/check","/upgrade"):
             return self.handle_api(self.path[1:])
         self.reply(404,{})
 
@@ -101,4 +115,5 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-HTTPServer(("127.0.0.1",18735), Handler).serve_forever()
+if __name__ == "__main__":
+    HTTPServer(("127.0.0.1",18735), Handler).serve_forever()

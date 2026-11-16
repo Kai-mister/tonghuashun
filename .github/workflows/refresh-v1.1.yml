@@ -1,0 +1,42 @@
+name: Refresh v1.1 assets
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/refresh-v1.1.yml']
+permissions:
+  contents: write
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          python3 -m unittest discover -s tests -v
+          python3 - <<'PY'
+          import json, zipfile
+          from pathlib import Path
+          from phone.backend import bundle, FILES
+          with zipfile.ZipFile('android/dist/sim-manager.apk') as apk:
+              assert json.loads(apk.read('assets/backend.json')) == bundle(Path('.'))
+          with zipfile.ZipFile('ths-sim-upgrade.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+              for name in (*FILES, 'android/dist/sim-manager.apk', 'scripts/upgrade-phone.sh', 'scripts/bootstrap-phone.py', 'README.md'):
+                  archive.write(name)
+          PY
+          cat > /tmp/release-notes.txt <<'NOTES'
+          Android 模拟仓管家 v1.1（替换附件，版本号不变）。
+
+          - 主界面、策略设置、盘前持仓核对、最近策略委托为四个独立页面。
+          - App 检查后台协议及代码版本；不匹配时明确提示，禁用策略操作。
+          - 修复保存设置失败却显示成功的问题。
+          - APK 内置对应后台代码，支持点击“更新手机后台”，等待当前操作完成后重启、校验，失败尝试回滚，保留设置、账本及启停状态。
+          - 买入计划检查增加时间、接口股票数、当日计划数日志。
+          - 仅管理程序委托核实的成交数量，不自动认领原有或手动持仓。
+
+          旧后台须先用 ths-sim-upgrade.zip 通过 USB 升级一次，再支持 App 内升级。后台失联或升级协议不兼容仍需 USB 修复。全新手机仍需先部署执行环境及配对。更新不会补下错过时段的买单。
+          NOTES
+          printf '\n附件源码提交：%s\n' "$GITHUB_SHA" >> /tmp/release-notes.txt
+          gh release upload v1.1 android/dist/sim-manager.apk ths-sim-upgrade.zip --clobber
+          gh release edit v1.1 --notes-file /tmp/release-notes.txt --latest

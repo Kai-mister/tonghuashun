@@ -118,10 +118,14 @@ class Worker:
             return
         if hm == self.settings["buy_time"] or manual and buy_window(now):
             if self.cache_date != (day, str(self.settings)) or not self.cached_plans or manual:
-                self.cached_plans = select_plans(fetch_plans()["stocks"], now.date(), self.settings)
+                stocks = fetch_plans()["stocks"]
+                self.cached_plans = select_plans(stocks, now.date(), self.settings)
+                log.info("买入计划检查 时间=%s 设定=%s 手动=%s 接口股票=%d 当日计划=%d",
+                         now.isoformat(), self.settings["buy_time"], manual, len(stocks), len(self.cached_plans))
                 self.cache_date = (day, str(self.settings))
             for p in self.cached_plans:
                 if not p["quantity"]:
+                    log.info("跳过买单 %s：%s", p["code"], p.get("skip_reason"))
                     continue
                 key = day + "/" + p["code"]
                 if not self.db.execute("SELECT 1 FROM orders WHERE plan=?", (key,)).fetchone():
