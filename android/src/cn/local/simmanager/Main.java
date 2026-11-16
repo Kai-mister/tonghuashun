@@ -175,7 +175,7 @@ public class Main extends Activity {
         LinearLayout navigation=new LinearLayout(this);
         navigation.setBackgroundColor(Color.WHITE);
         root.addView(navigation,new LinearLayout.LayoutParams(-1,dp(64)));
-        String[] names={"主界面","策略设置","盘前持仓核对","最近策略委托"};
+        String[] names={"家","设置","持仓","委托"};
         for(int i=0;i<screens.length;i++){
             final int index=i;
             TextView tab=new TextView(this);tab.setText(names[i]);tab.setTextSize(12);
