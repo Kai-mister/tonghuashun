@@ -53,7 +53,8 @@ class WorkerTests(unittest.TestCase):
         def tick(stamp):
             Clock.current = datetime.fromisoformat(stamp).replace(tzinfo=SHANGHAI)
             worker.tick(Clock.current)
-        with patch("strategy_worker.fetch_plans",return_value={"stocks":[data]}), patch("strategy_worker.datetime", Clock):
+        with patch("strategy_worker.fetch_plans",return_value={"stocks":[data]}), patch("strategy_worker.datetime", Clock), patch("strategy_worker.fetch_quotes",
+                side_effect=lambda codes: {c: dict(last=sim.last) for c in codes}):
             tick("2026-11-13T09:19")
             self.assertFalse(sim.rows)
             tick("2026-11-13T09:20")

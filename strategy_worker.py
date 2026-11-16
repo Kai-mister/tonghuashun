@@ -10,7 +10,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from premarket import SHANGHAI, exit_progress, exit_reason, select_plans
-from stock_api import fetch_plans
+from stock_api import fetch_plans, fetch_quotes
 from strategy_settings import load, validate
 from ths.simulator import Simulator
 
@@ -35,6 +35,7 @@ class Worker:
         self.cache_date = None
         self.cached_plans = []
         self.watch_status = {}
+        self.quotes = None
         self.settings = validate({})
         self.manual = False
         self.errors = []
@@ -108,6 +109,7 @@ class Worker:
                         self.sim.cancel(row, plan["code"])
 
     def tick(self, now, manual=False):
+        self.quotes = None
         self.manual = manual
         self.errors = []
         if manual:
@@ -167,6 +169,7 @@ class Worker:
             with self.db:
                 self.db.execute("INSERT OR REPLACE INTO morning_checks VALUES (?,?,?,?)",
                                 (key,day,holding["total"],holding["available"]))
+            self.watch_status[key] = (now, max(0, min(bought - sold, holding["available"], holding["total"])))
             log.info("模拟持仓核对 %s 总数 %d 可卖 %d 策略余额 %d",
                      key, holding["total"], holding["available"], bought-sold)
         if needs_recovery:
@@ -175,28 +178,50 @@ class Worker:
             self.watch_status[key] = (now, 0)
             return
         previous = self.watch_status.get(key)
-        # Recheck temporarily unavailable shares; frozen or unfilled orders may change.
-        if previous and previous[0].date() == now.date():
-            elapsed = (now - previous[0]).total_seconds()
-            if (not market_open(now) and previous[1]) or (not previous[1] and elapsed < 60):
-                return
-        quote = self.sim.quote(p["code"])
-        available = max(0, min(bought - sold, quote["available"], quote["total"]))
-        self.watch_status[key] = (now, available)
-        if not previous or previous[0].date() != now.date() or previous[1] != available:
-            log.info("模拟策略监控 %s，可卖 %s 股", key, available)
+        # Daily/restart checks establish sellable shares; only zero availability needs polling.
+        if previous is None or (previous[1] == 0 and (now - previous[0]).total_seconds() >= 60):
+            holding = self.sim.position(p["code"])
+            available = max(0, min(bought - sold, holding["available"], holding["total"]))
+            self.watch_status[key] = (now, available)
+        else:
+            available = min(bought - sold, previous[1])
         if not market_open(now) or not available:
             return
-        reserved = sum(o["qty"]-o["filled"] for o in orders if o["side"]=="卖出" and not o["done"])
-        progress = exit_progress(bought_filled=bought,sold_filled=sold,sell_open=reserved,
-                                 available=available)
-        reason = record["exit"] or exit_reason(p,last_price=quote["last"],now=now,
-                                                sellable_remaining=bought-sold)
+        reason = record["exit"] or exit_reason(p, last_price=None, now=now,
+                                               sellable_remaining=bought-sold)
+        if not reason:
+            if self.quotes is None:
+                codes = []
+                for item in self.db.execute("SELECT id,data FROM plans"):
+                    cached = self.watch_status.get(item["id"])
+                    plan = json.loads(item["data"])
+                    if cached and cached[1] > 0 and day > plan["planned_buy_date"]:
+                        codes.append(plan["code"])
+                self.quotes = {}
+                try:
+                    self.quotes = fetch_quotes(codes)
+                except Exception:
+                    log.exception("腾讯行情请求失败，本轮不使用旧价触发止盈止损")
+            quote = self.quotes.get(p["code"])
+            if not quote:
+                self.errors.append(f"{key} 腾讯行情缺失或过期，等待下轮；到期退出不受影响")
+                return
+            reason = exit_reason(p, last_price=quote["last"], now=now,
+                                 sellable_remaining=bought-sold)
         if reason:
             with self.db:
-                self.db.execute("UPDATE plans SET exit=? WHERE id=?",(reason,record["id"]))
+                self.db.execute("UPDATE plans SET exit=? WHERE id=?", (reason,record["id"]))
+            reserved = sum(o["qty"]-o["filled"] for o in orders if o["side"]=="卖出" and not o["done"])
+            if bought - sold <= reserved:
+                return
+            # UI is used only on an exit trigger to confirm available shares and legal sell price.
+            holding = self.sim.quote(p["code"])
+            available = max(0, min(bought - sold, holding["available"], holding["total"]))
+            self.watch_status[key] = (now, available)
+            progress = exit_progress(bought_filled=bought,sold_filled=sold,sell_open=reserved,
+                                     available=available)
             if progress["can_submit"]:
-                self.submit(record["id"],p,"卖出",progress["can_submit"],quote["limit"])
+                self.submit(record["id"],p,"卖出",progress["can_submit"],holding["limit"])
 
 
 
@@ -252,4 +277,4 @@ def run(trader, path):
                     worker.tick(datetime.now(SHANGHAI))
             except Exception:
                 log.exception("模拟策略执行异常")
-            time.sleep(3)
+            time.sleep(10)
