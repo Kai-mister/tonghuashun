@@ -108,6 +108,7 @@ public class Main extends Activity {
             .setPositiveButton("更新后台",(dialog,which)->load("upgrade"))
             .setNegativeButton("取消",null).show());
         LinearLayout watch=card(Color.WHITE);
+        watch.setVisibility(View.GONE); // Hide diagnostics only; WatchService remains independent.
         label(watch,"后台保活与定时唤醒",19,ink,true);
         watchNotice=label(watch,"",14,ink,false);
         Button exact=new Button(this);exact.setText("允许精确定时");watch.addView(exact);
