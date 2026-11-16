@@ -1,5 +1,7 @@
 """Adapter for the Android simulated account's order form and daily reports."""
 import re
+import logging
+import json
 import time
 import xml.etree.ElementTree as ET
 from decimal import Decimal
@@ -62,17 +64,29 @@ class Simulator:
         stock = self.field("auto_stockcode")
         stock.set_text(code)
         button = side[0] + " " + side[1] + "(模拟炒股)"
-        for _ in range(15):
-            if (stock.get_text() == code and self.text(button).exists
-                    and self.field("stockname").exists and self.field("txt_zuixin").exists):
-                # Wait for the name, available shares and quote to update together.
-                time.sleep(.4)
-                break
-            time.sleep(.2)
-        name = self.field("stockname").get_text(timeout=2)
-        if not self.title("模拟炒股") or not name or stock.get_text() != code:
-            raise RuntimeError("股票或模拟仓未确认")
-        return name, button
+        # Read one UI snapshot per poll; require a stable identity and loaded quote.
+        previous = None
+        stable = 0
+        actual = {}
+        for _ in range(25):
+            time.sleep(.3)
+            fields = {n.get("resource-id"): n.get("text", "").strip() for n in self.nodes()}
+            actual = {k: fields.get(self.pkg + ":id/" + k, "") for k in
+                      ("page_title_view", "auto_stockcode", "stockname", "txt_zuixin", "couldbuy")}
+            identity = (actual["auto_stockcode"], actual["stockname"])
+            try:
+                ready = (actual["page_title_view"] == "模拟炒股" and identity[0] == code
+                         and bool(identity[1]) and Decimal(actual["txt_zuixin"]) > 0
+                         and bool(re.fullmatch(r"可[买卖][\d,]+股", actual["couldbuy"])))
+            except Exception:
+                ready = False
+            stable = stable + 1 if ready and identity == previous else 0
+            previous = identity if ready else None
+            if stable >= 2:
+                return identity[1], button
+        detail = json.dumps(actual, ensure_ascii=False)
+        logging.getLogger(__name__).error("交易表单加载超时 expected_code=%s actual=%s", code, detail)
+        raise RuntimeError("交易表单未加载完成：" + detail)
 
     def position(self, code):
         return self.quote(code)
@@ -136,15 +150,8 @@ class Simulator:
         if not self.title("模拟炒股") or self.field("auto_stockcode").get_text() != code:
             raise RuntimeError("委托模拟仓或代码未确认")
         self.text(button).click(timeout=3)
-        labels = [n.get("text", "").strip() for n in self.nodes() if n.get("text")]
-        def value(key):
-            return labels[labels.index(key) + 1]
         try:
-            valid = ("委托" + side + "确认" in labels and value("代码") == code
-                     and value("名称") == name and int(value("数量")) == int(quantity)
-                     and Decimal(value("价格")) == price)
-            if not valid:
-                raise ValueError("确认页与委托参数不符")
+            self.wait_confirmation(side, code, name, quantity, price)
             if before_confirm:
                 before_confirm(name)
         except Exception:
@@ -158,6 +165,40 @@ class Simulator:
         self.text("确定").click(timeout=2)
         return dict(success=True, mode="simulate", contract=contract[1], name=name,
                     code=code, side=side, quantity=int(quantity), price=str(price))
+
+    def wait_confirmation(self, side, code, name, quantity, price):
+        expected = dict(dialog_title="委托" + side + "确认", stock_code_value=code,
+                        stock_name_value=name, number_value=str(quantity), price_value=str(price))
+        actual = {}
+        consecutive = 0
+        previous_diff = None
+        for _ in range(25):
+            fields = {n.get("resource-id"): n.get("text", "").strip() for n in self.nodes()}
+            actual = {k: fields.get(self.pkg + ":id/" + k, "") for k in expected}
+            differences = {}
+            for key, value in expected.items():
+                try:
+                    equal = (Decimal(actual[key]) == Decimal(value) if key == "price_value"
+                             else int(actual[key]) == int(value) if key == "number_value"
+                             else actual[key] == value)
+                except (ValueError, ArithmeticError):
+                    equal = False
+                if not equal:
+                    differences[key] = dict(expected=value, actual=actual[key])
+            if differences and differences != previous_diff:
+                logging.getLogger(__name__).warning("委托确认等待/字段不符 side=%s code=%s differences=%s",
+                    side, code, json.dumps(differences, ensure_ascii=False))
+            previous_diff = differences
+            consecutive = consecutive + 1 if not differences else 0
+            if consecutive >= 2:
+                # Account was checked before opening this modal; its background is inaccessible.
+                logging.getLogger(__name__).info("委托确认核对通过 side=%s fields=%s", side,
+                                                json.dumps(actual, ensure_ascii=False))
+                return
+            time.sleep(.3)
+        detail = json.dumps(dict(expected=expected, actual=actual, differences=previous_diff), ensure_ascii=False)
+        logging.getLogger(__name__).error("委托确认核对超时 %s", detail)
+        raise ValueError("确认页与委托参数不符：" + detail)
 
     def nodes(self):
         return [n for n in ET.fromstring(self.d.dump_hierarchy()).iter("node")

@@ -2,7 +2,7 @@
 
 import argparse
 from datetime import date, datetime, time
-from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_DOWN
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_DOWN, ROUND_HALF_UP
 import json
 from zoneinfo import ZoneInfo
 
@@ -51,7 +51,8 @@ def select_plans(stocks, buy_date, settings=None):
                 raise ValueError("回调区间与止盈止损点不一致")
         except (KeyError, InvalidOperation, ValueError) as error:
             raise ValueError(f"{stock['code']} 的 {tier} 价格无效：{error}") from error
-        limit = prices["buy_high"]
+        limit = ((prices["buy_low"] + prices["buy_high"]) / 2).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP)
         quantity = order_quantity(stock["code"], limit, settings)
         sell_date = date.fromisoformat(stock["planned_sell_date"])
         plans.append({

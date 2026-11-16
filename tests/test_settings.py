@@ -21,9 +21,17 @@ class SettingsTests(unittest.TestCase):
         day = datetime(2026,11,13).date()
         p = select_plans([STOCK],day,dict(strategy="conservative",target_amount="8000",
                                         min_amount="6000",max_amount="9000",buy_time="10:15"))[0]
-        self.assertEqual((p["tier"],p["quantity"],p["limit_price"]),("deep",200,"40"))
+        self.assertEqual((p["tier"],p["quantity"],p["limit_price"]),("deep",200,"39.50"))
         self.assertIn("10:15",p["buy_at"])
         self.assertEqual(p["take_profit"],"42")
+
+    def test_midpoint_rounding(self):
+        stock = dict(STOCK, shallow=dict(buy_low="49.94", buy_high="50.01",
+                                        stop_loss="48", take_profit="52"))
+        plan = select_plans([stock], datetime(2026, 11, 13).date())[0]
+        self.assertEqual(plan["limit_price"], "49.98")
+        self.assertEqual(plan["quantity"], 200)
+        self.assertEqual(plan["order_value"], "9996.00")
 
     def test_validation_and_atomic_save(self):
         with tempfile.TemporaryDirectory() as directory:
