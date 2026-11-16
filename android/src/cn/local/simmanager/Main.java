@@ -14,7 +14,7 @@ import java.util.concurrent.*;
 
 public class Main extends Activity {
     final int ink=0xff173936, green=0xff155d51;
-    LinearLayout page, checks, orders;
+    LinearLayout page, checks, orders, maintenance;
     final ScrollView[] screens = new ScrollView[4];
     final TextView[] tabs = new TextView[4];
     int selectedTab;
@@ -99,7 +99,8 @@ public class Main extends Activity {
         notice=label(header,"",14,0xffd5eee3,false);
         control=new Button(this);header.addView(control);control.setText("连接中");control.setEnabled(false);
         control.setOnClickListener(v->load(resume?"resume":"pause"));
-        LinearLayout maintenance=card(Color.WHITE);
+        maintenance=card(Color.WHITE);
+        maintenance.setVisibility(View.GONE);
         backendNotice=label(maintenance,"正在检查后台版本",14,ink,false);
         upgrade=new Button(this);upgrade.setText("更新手机后台");maintenance.addView(upgrade);
         upgrade.setVisibility(View.GONE);
@@ -278,6 +279,7 @@ public class Main extends Activity {
             runOnUiThread(()->{
                 busy=false;if(!visible||isDestroyed())return;
                 if(result==null||result.has("error")){
+                    maintenance.setVisibility(View.VISIBLE);
                     compatible=false;
                     state.setText(upgrading?"后台更新中":"服务不可用");
                     String message=result==null?"无法连接本机后台":result.optString("error");
@@ -286,6 +288,7 @@ public class Main extends Activity {
                     upgrade.setEnabled(false);
                     if(!action.equals("status"))Toast.makeText(this,message,Toast.LENGTH_LONG).show();
                 }else if(action.equals("upgrade")){
+                    maintenance.setVisibility(View.VISIBLE);
                     upgrading=true;compatible=false;backendNotice.setText("升级请求已接收，正在等待后台重启和校验");
                 }else{
                     JSONObject update=result.optJSONObject("update");
@@ -294,10 +297,11 @@ public class Main extends Activity {
                     compatible=result.optInt("api_version")==BuildBackend.API_VERSION &&
                         result.optString("backend_digest").equals(BuildBackend.DIGEST) && !upgrading;
                     boolean canUpgrade=result.optInt("update_protocol")==1;
-                    String detail=upgrading?"后台正在更新，请稍候":compatible?"后台版本已匹配 · "+BuildBackend.DIGEST.substring(0,12):
+                    String detail=upgrading?"后台正在更新，请稍候":compatible?"":
                         canUpgrade?"后台版本与 App 不一致，请更新手机后台":"旧后台不支持 App 内升级，请先通过 USB 升级一次";
-                    if(update!=null&&!update.optString("message").isEmpty())detail+="\n"+update.optString("message");
-                    backendNotice.setText(detail);
+                    if(update!=null&&(phase.equals("failed")||phase.equals("updating"))&&!update.optString("message").isEmpty())detail+="\n"+update.optString("message");
+                    backendNotice.setText(detail.trim());
+                    maintenance.setVisibility(compatible&&!phase.equals("failed")?View.GONE:View.VISIBLE);
                     upgrade.setVisibility(!compatible&&canUpgrade?View.VISIBLE:View.GONE);
                     upgrade.setEnabled(!upgrading&&canUpgrade);
                     save.setEnabled(compatible);check.setEnabled(compatible);
