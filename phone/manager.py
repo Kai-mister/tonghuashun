@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import sqlite3
 import subprocess
+import socket
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 BACKEND_DIGEST = installed_digest()
@@ -23,6 +25,26 @@ def running():
         return b"phone/local.py" in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
     except (OSError, ValueError):
         return False
+
+
+def maintain(reason):
+    """Recover dead execution services without unpausing or requesting catch-up."""
+    if (STATE / 'paused').exists():
+        return
+    try:
+        with socket.create_connection(('::1', 9008), timeout=.5):
+            ui_ready = True
+    except OSError:
+        ui_ready = False
+    restart = not running() or not ui_ready
+    if restart:
+        env = dict(os.environ)
+        env.pop('LD_LIBRARY_PATH', None)
+        subprocess.run(['/system/bin/sh', 'phone/background.sh'], env=env, check=True, timeout=10)
+    payload = dict(at=datetime.now().isoformat(), reason=reason, restarted=restart)
+    temp = STATE / 'watch-heartbeat.tmp'
+    temp.write_text(json.dumps(payload, ensure_ascii=False))
+    temp.replace(STATE / 'watch-heartbeat.json')
 
 
 def snapshot():
@@ -78,7 +100,13 @@ class Handler(BaseHTTPRequestHandler):
             update = STATE / "update-result.json"
             if action != "status" and update.exists() and json.loads(update.read_text()).get("phase") == "updating":
                 raise ValueError("后台正在升级，请等待完成")
-            if action == "settings":
+            if action == "maintain":
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 1024:
+                    raise ValueError("值守请求长度无效")
+                body = json.loads(self.rfile.read(length))
+                maintain(str(body.get("reason", "watch"))[:40])
+            elif action == "settings":
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 0 < length <= 2048:
                     raise ValueError("设置请求长度无效")
@@ -107,7 +135,7 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(404,{})
 
     def do_POST(self):
-        if self.path in ("/pause","/resume","/settings","/check","/upgrade"):
+        if self.path in ("/pause","/resume","/settings","/check","/upgrade","/maintain"):
             return self.handle_api(self.path[1:])
         self.reply(404,{})
 

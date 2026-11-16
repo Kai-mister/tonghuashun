@@ -47,6 +47,18 @@ class ManagerTests(unittest.TestCase):
                     with patch.object(module,'launch') as launch:
                         self.assertEqual(request('/upgrade',b'{}'),(202,{'accepted':True}))
                         launch.assert_called_once_with(b'{}')
+                    # Guardian must never resume paused strategies or request catch-up.
+                    Path('state/paused').touch()
+                    with patch.object(module.subprocess,'run') as run:
+                        self.assertEqual(request('/maintain',b'{"reason":"alarm"}')[0],200)
+                        run.assert_not_called()
+                    self.assertFalse(Path('state/check-request').exists())
+                    Path('state/paused').unlink()
+                    with patch.object(module,'running',return_value=False), patch.object(module.subprocess,'run') as run:
+                        self.assertEqual(request('/maintain',b'{"reason":"alarm"}')[0],200)
+                        run.assert_called_once()
+                    self.assertFalse(Path('state/check-request').exists())
+                    self.assertTrue(json.loads(Path('state/watch-heartbeat.json').read_text())['restarted'])
                     Path('state/update-result.json').write_text('{"phase":"updating"}')
                     self.assertEqual(request('/settings',b'{}')[0],400)
                 finally:

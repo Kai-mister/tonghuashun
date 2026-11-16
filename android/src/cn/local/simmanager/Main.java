@@ -49,7 +49,7 @@ public class Main extends Activity {
     }
     TextView state, account, notice;
     Button control, save, check, upgrade;
-    TextView backendNotice;
+    TextView backendNotice, watchNotice;
     boolean compatible, upgrading;
     EditText target, minimum, maximum, buyTime;
     Spinner strategy;
@@ -107,6 +107,29 @@ public class Main extends Activity {
             .setMessage("更新为此 App 内置的后台版本。等待当前操作结束后重启后台，保留设置、账本和启停状态，不会补下错过的买单。")
             .setPositiveButton("更新后台",(dialog,which)->load("upgrade"))
             .setNegativeButton("取消",null).show());
+        LinearLayout watch=card(Color.WHITE);
+        label(watch,"后台保活与定时唤醒",19,ink,true);
+        watchNotice=label(watch,"",14,ink,false);
+        Button exact=new Button(this);exact.setText("允许精确定时");watch.addView(exact);
+        exact.setOnClickListener(v->{
+            if(Build.VERSION.SDK_INT>=31)openSetting(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,true);
+            else Toast.makeText(this,"此系统无需单独授权",Toast.LENGTH_SHORT).show();
+        });
+        Button battery=new Button(this);battery.setText("允许后台运行 / 不受电池优化限制");watch.addView(battery);
+        battery.setOnClickListener(v->openSetting(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,true));
+        Button vendor=new Button(this);vendor.setText("应用详情 / 厂商后台管理");watch.addView(vendor);
+        vendor.setOnClickListener(v->openSetting(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,true));
+        Button notifications=new Button(this);notifications.setText("通知与值守状态");watch.addView(notifications);
+        notifications.setOnClickListener(v->{
+            android.content.Intent intent=new android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+            intent.putExtra(android.provider.Settings.EXTRA_APP_PACKAGE,getPackageName());startActivity(intent);
+        });
+        Button test=new Button(this);test.setText("30 秒后唤醒自检（不触发补单）");watch.addView(test);
+        test.setOnClickListener(v->{
+            try{WatchService.test(this);refreshWatch();Toast.makeText(this,"已设置，已退到后台；可熄屏等待自检",Toast.LENGTH_LONG).show();moveTaskToBack(true);}
+            catch(RuntimeException error){Toast.makeText(this,error.getMessage(),Toast.LENGTH_LONG).show();}
+        });
+        label(watch,"系统会显示下一次唤醒闹钟（不响铃）。关闭界面或划掉最近任务后，通知栏值守继续。不要强行停止 App。设备厂商的后台限制也需允许；密码锁屏需手动解锁，手机重启后执行器可能需要 USB 恢复。",13,green,false);
         LinearLayout actions=card(Color.WHITE);
         check=new Button(this);check.setEnabled(false);check.setText("检查并补执行");actions.addView(check);
         check.setOnClickListener(v->new android.app.AlertDialog.Builder(this)
@@ -177,7 +200,33 @@ public class Main extends Activity {
         out.putInt("strategy",strategy.getSelectedItemPosition());
         super.onSaveInstanceState(out);
     }
-    protected void onResume(){super.onResume();visible=true;load("status");}
+    void openSetting(String action,boolean packageUri){
+        try{
+            android.content.Intent intent=new android.content.Intent(action);
+            if(packageUri)intent.setData(android.net.Uri.parse("package:"+getPackageName()));
+            startActivity(intent);
+        }catch(RuntimeException error){Toast.makeText(this,"请在系统设置中允许此 App 的后台运行与精确定时",Toast.LENGTH_LONG).show();}
+    }
+    void refreshWatch(){
+        android.content.SharedPreferences prefs=getSharedPreferences("local",0);
+        boolean battery=((android.os.PowerManager)getSystemService(POWER_SERVICE)).isIgnoringBatteryOptimizations(getPackageName());
+        boolean locked=((android.app.KeyguardManager)getSystemService(KEYGUARD_SERVICE)).isKeyguardSecure();
+        boolean notification=((android.app.NotificationManager)getSystemService(NOTIFICATION_SERVICE)).areNotificationsEnabled();
+        long next=prefs.getLong("watch_next",0);
+        String text="精确定时："+(WatchService.exact(this)?"已允许":"未允许")+" · 后台电池限制："+(battery?"已解除":"未解除")+
+            "\n通知："+(notification?"已允许":"未允许")+" · "+(locked?"有安全锁屏，无法保证自动操作":"无安全锁屏")+
+            "\n"+prefs.getString("watch_status","等待后台就绪后开启值守");
+        if(prefs.getBoolean("watch_enabled",false)&&next>0)text+="\n下次系统唤醒："+WatchSchedule.display(next)+"（北京时间）";
+        long checked=prefs.getLong("watch_checked",0);
+        if(prefs.getBoolean("watch_enabled",false)&&checked>0){
+            text+="\n最近后台检查："+java.time.Instant.ofEpochMilli(checked).atZone(WatchSchedule.ZONE).toLocalTime().withNano(0);
+            if(WatchSchedule.active(System.currentTimeMillis())&&System.currentTimeMillis()-checked>90000)
+                text+="\n值守检查超时，请检查厂商后台管理权限";
+        }
+        String test=prefs.getString("wake_test","");if(!test.isEmpty())text+="\n"+test;
+        watchNotice.setText(text);
+    }
+    protected void onResume(){super.onResume();visible=true;refreshWatch();load("status");}
     protected void onPause(){visible=false;timer.removeCallbacks(poll);super.onPause();}
     protected void onDestroy(){io.shutdownNow();super.onDestroy();}
     void load(String action){
@@ -251,6 +300,7 @@ public class Main extends Activity {
                     upgrade.setVisibility(!compatible&&canUpgrade?View.VISIBLE:View.GONE);
                     upgrade.setEnabled(!upgrading&&canUpgrade);
                     save.setEnabled(compatible);check.setEnabled(compatible);
+                    if(compatible)WatchService.sync(this,result);
                     JSONObject settings=result.optJSONObject("settings");
                     if(settings!=null && (!settingsLoaded && !editing || action.equals("settings"))){
                         target.setText(setting(settings,"target_amount","10000"));
@@ -268,6 +318,7 @@ public class Main extends Activity {
                     notice.setText(compatible?"暂停在本轮结束后生效，已有委托继续有效。":"后台未匹配，策略操作暂不可用；已有后台任务不受此页面禁用影响。");
                     rows(checks,result.optJSONArray("checks"),true);rows(orders,result.optJSONArray("orders"),false);
                 }
+                refreshWatch();
                 timer.postDelayed(poll,4000);
             });
         });
