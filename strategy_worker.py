@@ -83,12 +83,21 @@ class Worker:
                     (now-timedelta(seconds=3)).strftime("%H:%M:%S"),
                     (now+timedelta(seconds=30)).strftime("%H:%M:%S"), name,qty,str(price))).lastrowid
         order_id = None
-        receipt = self.sim.submit(side, plan["code"], qty, price, journal)
-        with self.db:
-            self.db.execute("UPDATE orders SET contract=? WHERE id=?", (receipt["contract"],order_id))
-        log.info("模拟委托 %s %s %s 股，合同 %s", key,side,qty,receipt["contract"])
+        try:
+            receipt = self.sim.submit(side, plan["code"], qty, price, journal)
+            with self.db:
+                self.db.execute("UPDATE orders SET contract=? WHERE id=?", (receipt["contract"],order_id))
+            log.info("模拟委托 %s %s %s 股，合同 %s", key,side,qty,receipt["contract"])
+        finally:
+            # A recorded attempt may have reached the server even without a receipt.
+            if order_id is not None:
+                try:
+                    self.reconcile(datetime.now(SHANGHAI), allow_cancel=False)
+                except Exception:
+                    log.exception("操作后委托核对失败，保留账本等待手动检查")
+                    self.errors.append(f"{key} 操作后委托待核对，请使用检查并补执行")
 
-    def reconcile(self, now):
+    def reconcile(self, now, allow_cancel=True):
         pending = self.db.execute("SELECT * FROM orders WHERE done=0 AND day=?", (now.date().isoformat(),)).fetchall()
         if not pending:
             return
@@ -101,12 +110,15 @@ class Worker:
             with self.db:
                 self.db.execute("UPDATE orders SET filled=?, stamp=?, done=? WHERE id=?",
                                 (row["filled"],row["time"],row["status"] in TERMINAL,order["id"]))
-            if order["side"]=="卖出" and row["status"] not in TERMINAL and row["filled"] < order["qty"]:
+            if allow_cancel and order["side"]=="卖出" and row["status"] not in TERMINAL and row["filled"] < order["qty"]:
                 plan = json.loads(self.db.execute("SELECT data FROM plans WHERE id=?",(order["plan"],)).fetchone()[0])
                 if market_open(now) and now.strftime("%H:%M:%S") > order["until"]:
                     quote = self.sim.quote(plan["code"])
                     if Decimal(quote["limit"]) < Decimal(order["price"]):
-                        self.sim.cancel(row, plan["code"])
+                        try:
+                            self.sim.cancel(row, plan["code"])
+                        finally:
+                            self.reconcile(datetime.now(SHANGHAI), allow_cancel=False)
 
     def tick(self, now, manual=False):
         self.quotes = None
@@ -138,7 +150,6 @@ class Worker:
                     except Exception as error:
                         self.errors.append(f"{p['code']} 买单未完成：{error}")
                         log.exception("模拟买单未完成 %s", key)
-        self.reconcile(now)
         if manual:
             self.watch_status.clear()
         if not ("09:15" <= hm < "09:20" or market_open(now)):

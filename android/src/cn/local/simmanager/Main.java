@@ -14,9 +14,9 @@ import java.util.concurrent.*;
 
 public class Main extends Activity {
     final int ink=0xff173936, green=0xff155d51;
-    LinearLayout page, checks, orders, maintenance;
-    final ScrollView[] screens = new ScrollView[4];
-    final TextView[] tabs = new TextView[4];
+    LinearLayout page, orders, maintenance;
+    final ScrollView[] screens = new ScrollView[3];
+    final TextView[] tabs = new TextView[3];
     int selectedTab;
     boolean editing;
     LinearLayout screen(LinearLayout host, int index) {
@@ -166,16 +166,13 @@ public class Main extends Activity {
         });
         label(settings,"设置应用于尚未挂出的买单；已有持仓继续使用买入时的止盈止损。",13,green,false);
         page=screen(root,2);
-        label(page,"盘前持仓核对",26,ink,true);checks=card(Color.WHITE);
-        rows(checks,null,true);
-        page=screen(root,3);
         label(page,"最近策略委托",26,ink,true);orders=card(Color.WHITE);
-        rows(orders,null,false);
+        rows(orders,null);
         page=homePage;
         LinearLayout navigation=new LinearLayout(this);
         navigation.setBackgroundColor(Color.WHITE);
         root.addView(navigation,new LinearLayout.LayoutParams(-1,dp(64)));
-        String[] names={"家","设置","持仓","委托"};
+        String[] names={"家","设置","委托"};
         for(int i=0;i<screens.length;i++){
             final int index=i;
             TextView tab=new TextView(this);tab.setText(names[i]);tab.setTextSize(12);
@@ -191,7 +188,7 @@ public class Main extends Activity {
             strategy.setSelection(saved.getInt("strategy",0));
             editing=saved.getBoolean("editing",false);
         }
-        selectTab(saved==null?0:saved.getInt("tab",0));
+        selectTab(saved==null?0:Math.max(0,Math.min(screens.length-1,saved.getInt("tab",0))));
     }
     protected void onSaveInstanceState(Bundle out){
         out.putInt("tab",selectedTab);out.putBoolean("editing",editing);
@@ -321,21 +318,23 @@ public class Main extends Activity {
                     resume=result.optBoolean("paused")||!result.optBoolean("active");
                     control.setText(resume?"启动 / 恢复策略":"暂停策略");control.setEnabled(compatible);
                     notice.setText(compatible?"暂停在本轮结束后生效，已有委托继续有效。":"后台未匹配，策略操作暂不可用；已有后台任务不受此页面禁用影响。");
-                    rows(checks,result.optJSONArray("checks"),true);rows(orders,result.optJSONArray("orders"),false);
+                    rows(orders,result.optJSONArray("orders"));
                 }
                 refreshWatch();
                 timer.postDelayed(poll,4000);
             });
         });
     }
-    void rows(LinearLayout box,JSONArray list,boolean holdings){
+    void rows(LinearLayout box,JSONArray list){
         box.removeAllViews();
-        if(list==null||list.length()==0){label(box,holdings?"暂无盘前核对记录":"暂无策略委托",15,0xff647570,false);return;}
+        if(list==null||list.length()==0){label(box,"暂无策略委托",15,0xff647570,false);return;}
         for(int i=0;i<list.length();i++){
             JSONObject row=list.optJSONObject(i);String plan=row.optString("plan");
             String code=plan.substring(plan.lastIndexOf('/')+1);
-            label(box,code+"   "+row.optString("day"),15,ink,true);
-            String detail=holdings?"账户持仓 "+row.optInt("total")+" 股 · 可卖 "+row.optInt("available")+" 股":
+            String name=row.optString("name", "").trim();
+            if(name.equals("null"))name="";
+            label(box,code+(name.isEmpty()?"":" "+name)+"   "+row.optString("day"),15,ink,true);
+            String detail=
                 row.optString("side")+" "+row.optString("price")+" 元 · 已成交 "+row.optInt("filled")+" / "+row.optInt("qty")+" 股";
             label(box,detail,14,green,false);
         }

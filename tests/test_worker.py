@@ -64,6 +64,7 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual(len(sim.rows), 1)
             sim.rows[0].update(status="全部成交",filled=200)
             tick("2026-11-13T09:31")
+            worker.reconcile(Clock.current)
             sim.rows.clear()
             sim.available = 0
             tick("2026-11-16T09:15")
@@ -78,9 +79,11 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual(db.execute("select exit from plans").fetchone()[0], reason)
             self.assertEqual(sim.rows[0]["side"], "卖出")
             sim.rows[0].update(status="部分成交",filled=100)
+            worker.reconcile(Clock.current)
             tick(trigger)
             self.assertEqual(len(sim.rows), 1)
             sim.rows[0].update(status="全部成交",filled=200)
+            worker.reconcile(Clock.current)
             tick(trigger)
             self.assertEqual(db.execute("select filled,done from orders where side='卖出'").fetchone()[:], (200,1))
         db.close()
@@ -127,6 +130,20 @@ class WorkerTests(unittest.TestCase):
                              [(0,0),(100,1)])
             Worker(sim, db)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM migrations").fetchone()[0],1)
+
+    def test_pending_order_does_not_poll_reports(self):
+        from unittest.mock import Mock
+        sim = FakeSim()
+        sim.report = Mock(return_value=[])
+        with sqlite3.connect(":memory:") as db:
+            worker = Worker(sim, db)
+            db.execute("INSERT INTO orders(side,day,qty,filled,done) VALUES ('买入','2026-11-16',200,0,0)")
+            for minute in (1,2,3):
+                worker.tick(datetime(2026,11,16,10,minute,tzinfo=SHANGHAI))
+            sim.report.assert_not_called()
+            with patch("strategy_worker.fetch_plans",return_value={"stocks":[]}):
+                worker.tick(datetime(2026,11,16,10,4,tzinfo=SHANGHAI),manual=True)
+            sim.report.assert_called_once()
 
     def test_triggers(self):
         for price, stamp, reason in [("48","10:10","stop_loss"),("52","10:10","take_profit"),

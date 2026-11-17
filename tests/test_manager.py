@@ -23,7 +23,7 @@ class ManagerTests(unittest.TestCase):
                 Path('state').mkdir();Path('state/manager.key').write_text('a'*64)
                 with sqlite3.connect('state/strategy.sqlite3') as db:
                     db.executescript('CREATE TABLE identity(account TEXT);'
-                        'CREATE TABLE orders(id INTEGER,plan TEXT,day TEXT,side TEXT,qty INTEGER,price TEXT,filled INTEGER,done INTEGER);'
+                        'CREATE TABLE orders(id INTEGER,plan TEXT,name TEXT,day TEXT,side TEXT,qty INTEGER,price TEXT,filled INTEGER,done INTEGER);'
                         'CREATE TABLE morning_checks(plan TEXT,day TEXT,total INTEGER,available INTEGER);')
                 with patch('phone.backend.installed_digest', return_value='digest'):
                     spec=importlib.util.spec_from_file_location('test_manager_module',ROOT/'phone/manager.py')

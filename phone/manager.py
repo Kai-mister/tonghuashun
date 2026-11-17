@@ -66,7 +66,7 @@ def snapshot():
     with sqlite3.connect("file:state/strategy.sqlite3?mode=ro", uri=True) as db:
         db.row_factory = sqlite3.Row
         account = db.execute("SELECT account FROM identity LIMIT 1").fetchone()
-        orders = [dict(r) for r in db.execute("""SELECT plan, day, side, qty, price, filled, done
+        orders = [dict(r) for r in db.execute("""SELECT plan, name, day, side, qty, price, filled, done
                     FROM orders ORDER BY id DESC LIMIT 20""")]
         checks = [dict(r) for r in db.execute("""SELECT plan, day, total, available FROM morning_checks
                     ORDER BY day DESC, plan LIMIT 20""")]
