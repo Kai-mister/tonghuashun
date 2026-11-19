@@ -39,6 +39,9 @@ class FakeSim:
     def position(self, code):
         return dict(total=0 if not self.rows and Clock.current.hour==9 and Clock.current.minute==20 else 200, available=self.available)
 
+    def holdings(self):
+        return [dict(name="样本",total=200,available=self.available)]
+
     def quote(self, code):
         return dict(last=self.last, limit="47.00", available=self.available, total=200)
 
@@ -67,11 +70,13 @@ class WorkerTests(unittest.TestCase):
             worker.reconcile(Clock.current)
             sim.rows.clear()
             sim.available = 0
-            tick("2026-11-16T09:15")
+            worker.check_holdings(datetime(2026,11,16,9,15,tzinfo=SHANGHAI),force=True)
+            tick("2026-11-16T09:30")
             key = "2026-11-13/002222"
             self.assertEqual(worker.watch_status[key][1], 0)
             sim.available = 200
-            tick("2026-11-16T09:16")
+            worker.check_holdings(datetime(2026,11,16,9,16,tzinfo=SHANGHAI),force=True)
+            tick("2026-11-16T09:31")
             self.assertEqual(worker.watch_status[key][1], 200)
             self.assertFalse(sim.rows)
             sim.last = exit_price
@@ -101,10 +106,11 @@ class WorkerTests(unittest.TestCase):
                     sim = FakeSim()
                     sim.account = account
                     sim.position = Mock(return_value=dict(total=total, available=free))
+                    sim.holdings = Mock(return_value=[dict(name="样本",total=total,available=free)])
                     sim.quote = Mock(return_value=dict(total=total, available=free))
                     worker = Worker(sim, db)
                     key = "2026-11-13/002222"
-                    plan = dict(code="002222", planned_buy_date="2026-11-13")
+                    plan = dict(code="002222", planned_buy_date="2026-11-13", liquidate_at="2026-11-20T14:50:00+08:00", stop_loss="1",take_profit="99")
                     db.execute("INSERT INTO plans VALUES (?,?,NULL)", (key,json.dumps(plan)))
                     db.execute("INSERT INTO orders(plan,side,day,qty,filled,stamp) VALUES (?,'买入',?,200,?,?)",
                                (key,plan["planned_buy_date"],filled,"09:20:00" if filled else None))
@@ -112,8 +118,12 @@ class WorkerTests(unittest.TestCase):
                         db.execute("INSERT INTO orders(plan,side,day,qty,filled,done) VALUES (?,'卖出',?,100,?,1)",
                                    (key,plan["planned_buy_date"],sold))
                     db.execute("INSERT INTO buy_snapshots VALUES (1,100)")
-                    worker.tick(datetime(2026,11,16,9,16,tzinfo=SHANGHAI))
-                    sim.position.assert_called_once_with("002222")
+                    db.execute("UPDATE orders SET name='样本'")
+                    worker.check_holdings(datetime(2026,11,16,9,16,tzinfo=SHANGHAI), force=True)
+                    with patch("strategy_worker.fetch_quotes",return_value={}):
+                        worker.tick(datetime(2026,11,16,9,30,tzinfo=SHANGHAI))
+                    sim.position.assert_not_called()
+                    sim.holdings.assert_called_once()
                     self.assertEqual(db.execute("SELECT filled,done FROM orders WHERE side='买入'").fetchone()[:], (filled,0))
                     self.assertEqual(worker.watch_status[key][1], expected)
                     self.assertTrue(worker.errors)

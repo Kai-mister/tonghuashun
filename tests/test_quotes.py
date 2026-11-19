@@ -32,7 +32,7 @@ class QuotesTests(unittest.TestCase):
                 worker.tick(datetime(2026,11,17,10,0,tzinfo=SHANGHAI))
                 worker.tick(datetime(2026,11,17,10,0,3,tzinfo=SHANGHAI))
                 self.assertEqual(fetch.call_count,2)
-                sim.position.assert_called_once()
+                sim.position.assert_not_called()
                 sim.quote.assert_not_called()
             worker.submit=Mock();sim.quote.return_value=dict(total=200,available=200,limit='40')
             with patch('strategy_worker.fetch_quotes',return_value={}):

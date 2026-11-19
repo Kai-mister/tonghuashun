@@ -43,9 +43,16 @@ class Element:
         return rpc("waitForExists", self.selector, int(timeout*1000))
 
     def get_text(self, timeout=2):
-        if not self.wait(timeout):
-            raise RuntimeError(f"未找到控件 {self.attrs}")
-        return rpc("getText",self.selector)
+        for attempt in range(3):
+            try:
+                if not self.wait(timeout):
+                    raise RuntimeError(f"未找到控件 {self.attrs}")
+                return rpc("getText", self.selector)
+            except RuntimeError as error:
+                if "StaleObjectException" not in str(error) or attempt == 2:
+                    raise
+                time.sleep(.2)
+
 
     def set_text(self, value):
         if not rpc("setText",self.selector,value):
@@ -66,6 +73,9 @@ class Device:
 
     def dump_hierarchy(self):
         return rpc("dumpWindowHierarchy", False, 60)
+
+    def swipe(self, x1, y1, x2, y2):
+        rpc("swipe", x1, y1, x2, y2, 30)
 
     def press(self, key):
         rpc("pressKey", key)

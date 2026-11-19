@@ -46,6 +46,7 @@ class Simulator:
             self.d.app_start(self.pkg)
         if self.title("当日委托") or self.title("当日成交"):
             self.d.press("back")
+            time.sleep(.4)
         if not (self.title("模拟炒股") and self.field("btn", text=name).exists):
             if not self.trader.go_to_trade():
                 raise RuntimeError("无法确认模拟练习区")
@@ -60,9 +61,40 @@ class Simulator:
     def form(self, side, code):
         if side not in ("买入", "卖出") or not re.fullmatch(r"[0-9]{6}", code):
             raise ValueError("证券代码或方向无效")
+        for attempt in range(3):
+            try:
+                return self.prepare_form(side, code)
+            except RuntimeError as error:
+                # Only preparation is retried, never final submission or account mismatch.
+                retryable = any(marker in str(error) for marker in
+                    ("StaleObjectException", "UiObjectNotFoundException", "NullPointerException", "无法点击", "未找到控件",
+                     "控件输入失败", "交易表单未加载完成", "股票代码清空失败"))
+                logging.getLogger(__name__).warning("股票切换失败 code=%s attempt=%d error=%s",
+                                                   code, attempt + 1, error)
+                if not retryable or attempt == 2:
+                    raise
+                time.sleep(.5)
+
+    def prepare_form(self, side, code):
+        if self.field("close_btn", text="取消").exists:
+            self.field("close_btn", text="取消").click()
         self.tab(side)
         stock = self.field("auto_stockcode")
-        stock.set_text(code)
+        old_code = stock.get_text()
+        old_name = self.field("stockname").get_text() if self.field("stockname").exists else ""
+        stock.click(timeout=3)
+        if not self.field("close_btn", text="取消").wait(3):
+            raise RuntimeError("交易表单未加载完成：股票搜索未打开")
+        stock = self.field("auto_stockcode")
+        stock.set_text("")
+        for _ in range(10):
+            if self.field("auto_stockcode").get_text() in ("", "股票代码/简拼"):
+                break
+            time.sleep(.2)
+        else:
+            raise RuntimeError("股票代码清空失败")
+        self.field("auto_stockcode").set_text(code)
+        self.select_search_result(code)
         button = side[0] + " " + side[1] + "(模拟炒股)"
         # Read one UI snapshot per poll; require a stable identity and loaded quote.
         previous = None
@@ -76,8 +108,9 @@ class Simulator:
             identity = (actual["auto_stockcode"], actual["stockname"])
             try:
                 ready = (actual["page_title_view"] == "模拟炒股" and identity[0] == code
-                         and bool(identity[1]) and Decimal(actual["txt_zuixin"]) > 0
-                         and bool(re.fullmatch(r"可[买卖][\d,]+股", actual["couldbuy"])))
+                         and bool(identity[1]) and (old_code == code or not old_name or identity[1] != old_name)
+                         and Decimal(actual["txt_zuixin"]) > 0
+                         and bool(re.fullmatch("可" + side[0] + r"[\d,]+股", actual["couldbuy"])))
             except Exception:
                 ready = False
             stable = stable + 1 if ready and identity == previous else 0
@@ -87,6 +120,110 @@ class Simulator:
         detail = json.dumps(actual, ensure_ascii=False)
         logging.getLogger(__name__).error("交易表单加载超时 expected_code=%s actual=%s", code, detail)
         raise RuntimeError("交易表单未加载完成：" + detail)
+
+    def select_search_result(self, code):
+        """Search rows are rebuilt asynchronously. Re-observe after every click attempt."""
+        previous = None
+        clicks = 0
+        last_error = "搜索结果尚未稳定"
+        for _ in range(25):
+            nodes = self.nodes()
+            popup = any(n.get("resource-id") == self.pkg + ":id/close_btn" for n in nodes)
+            if not popup:
+                fields = {n.get("resource-id"): n.get("text", "").strip() for n in nodes}
+                if (fields.get(self.pkg + ":id/page_title_view") == "模拟炒股"
+                        and fields.get(self.pkg + ":id/auto_stockcode") == code):
+                    return
+                raise RuntimeError("交易表单未加载完成：搜索关闭但股票代码不符")
+            targets = [n for n in nodes if n.get("resource-id") == self.pkg + ":id/stockcode_tv"
+                       and n.get("text", "").strip() == code]
+            fingerprint = targets[0].get("bounds") if len(targets) == 1 else None
+            if fingerprint and fingerprint == previous and clicks < 3:
+                clicks += 1
+                try:
+                    self.field("stockcode_tv", text=code).click(timeout=1)
+                except RuntimeError as error:
+                    if not any(x in str(error) for x in ("StaleObjectException", "UiObjectNotFoundException",
+                                                         "NullPointerException", "无法点击")):
+                        raise
+                    last_error = str(error)
+                    logging.getLogger(__name__).warning(
+                        "搜索结果点击待核实 code=%s attempt=%d error=%s", code, clicks, error)
+                # A failed RPC may still have selected the row; inspect before retrying.
+                previous = None
+            else:
+                previous = fingerprint
+            time.sleep(.3)
+        raise RuntimeError(f"交易表单未加载完成：选择 {code} 超时，点击 {clicks} 次；{last_error}")
+
+    def holdings_page(self):
+        nodes = self.nodes()
+        if not any(n.get("text") == "持仓/可用" for n in nodes):
+            raise RuntimeError("持仓列表表头未加载")
+        if any(n.get("text") == "没有持仓数据" for n in nodes):
+            return [], True, None
+        tables = [n for n in nodes if n.get("resource-id") == self.pkg + ":id/recyclerview_id"]
+        if len(tables) != 1:
+            raise RuntimeError("无法唯一定位完整持仓列表")
+        table = tables[0]
+        rows = []
+        footer = False
+        for row in table:
+            children = list(row.iter("node"))
+            if any(n.get("resource-id") == self.pkg + ":id/stock_manage" for n in children):
+                footer = True
+                continue
+            cells = [n.get("text", "").strip() for n in children if n.get("text")]
+            if not cells:
+                continue
+            if len(cells) != 8:
+                raise RuntimeError("持仓行字段不完整，不能确认整表")
+            total, available = (v.replace(",", "") for v in cells[4:6])
+            if not total.isdigit() or not available.isdigit() or int(available) > int(total):
+                raise RuntimeError("持仓数量格式异常")
+            rows.append(dict(name=cells[0], total=int(total), available=int(available)))
+        bounds = [int(x) for x in re.findall(r"\d+", table.get("bounds", ""))]
+        if len(bounds) != 4 or (not rows and not footer):
+            raise RuntimeError("持仓列表未完整加载")
+        return rows, footer, None if table.get("scrollable") == "false" and footer else bounds
+
+    def holdings(self):
+        """One complete account snapshot, without selecting individual securities."""
+        self.tab("持仓")
+        time.sleep(.5)
+        # Start from the top even if this tab retained an earlier scroll position.
+        previous = None
+        for _ in range(30):
+            rows, footer, bounds = self.holdings_page()
+            fingerprint = tuple(r["name"] for r in rows)
+            if not bounds or fingerprint == previous:
+                break
+            previous = fingerprint
+            x1,y1,x2,y2 = bounds
+            self.d.swipe((x1+x2)//2, y1+(y2-y1)//4, (x1+x2)//2, y2-(y2-y1)//4)
+            time.sleep(.4)
+        else:
+            raise RuntimeError("持仓列表无法回到顶部")
+        collected = {}
+        previous = None
+        for _ in range(30):
+            self.check_account()
+            rows, footer, bounds = self.holdings_page()
+            for row in rows:
+                old = collected.get(row["name"])
+                if old is not None and old != row:
+                    raise RuntimeError("持仓数量在读取期间变化，请手动重新核对")
+                collected[row["name"]] = row
+            if footer:
+                return list(collected.values())
+            fingerprint = tuple(r["name"] for r in rows)
+            if fingerprint == previous:
+                raise RuntimeError("持仓列表未到底且无法继续滚动")
+            previous = fingerprint
+            x1,y1,x2,y2 = bounds
+            self.d.swipe((x1+x2)//2, y2-(y2-y1)//4, (x1+x2)//2, y1+(y2-y1)//4)
+            time.sleep(.4)
+        raise RuntimeError("持仓列表超过读取页数限制")
 
     def position(self, code):
         return self.quote(code)

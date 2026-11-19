@@ -50,6 +50,8 @@ class Worker:
           CREATE TABLE IF NOT EXISTS morning_checks(
             plan TEXT PRIMARY KEY, day TEXT NOT NULL, total INTEGER, available INTEGER);
           CREATE TABLE IF NOT EXISTS identity(account TEXT PRIMARY KEY);
+          CREATE TABLE IF NOT EXISTS holdings_schedule(day TEXT PRIMARY KEY);
+          CREATE TABLE IF NOT EXISTS holdings_runs(day TEXT PRIMARY KEY, status TEXT, data TEXT, error TEXT);
         """)
         sim.tab("查询")
         account = db.execute("SELECT account FROM identity").fetchone()
@@ -150,9 +152,11 @@ class Worker:
                     except Exception as error:
                         self.errors.append(f"{p['code']} 买单未完成：{error}")
                         log.exception("模拟买单未完成 %s", key)
+        if hm == "16:30" or manual:
+            self.check_holdings(now, force=manual)
         if manual:
             self.watch_status.clear()
-        if not ("09:15" <= hm < "09:20" or market_open(now)):
+        if not market_open(now):
             return
         for record in self.db.execute("SELECT * FROM plans").fetchall():
             try:
@@ -160,6 +164,46 @@ class Worker:
             except Exception as error:
                 self.errors.append(f"{record['id']} 持仓或卖出异常：{error}")
                 log.exception("模拟持仓查询或退出异常 %s", record["id"])
+
+    def check_holdings(self, now, force=False):
+        day = now.date().isoformat()
+        if not force and self.db.execute("SELECT 1 FROM holdings_schedule WHERE day=?", (day,)).fetchone():
+            return
+        # Persist the attempt before UI access: failure/restart must not create a polling loop.
+        with self.db:
+            if not force:
+                self.db.execute("INSERT INTO holdings_schedule VALUES (?)", (day,))
+            self.db.execute("INSERT OR REPLACE INTO holdings_runs VALUES (?, 'running', NULL, NULL)", (day,))
+        try:
+            holdings = self.sim.holdings()
+            by_name = {r["name"]: r for r in holdings}
+            if len(by_name) != len(holdings):
+                raise RuntimeError("持仓名称重复，无法唯一核对")
+            updates = []
+            for record in self.db.execute("SELECT id,data FROM plans").fetchall():
+                names = self.db.execute("SELECT DISTINCT name FROM orders WHERE plan=? AND side='买入'", (record["id"],)).fetchall()
+                if not names:
+                    continue
+                if len(names) != 1 or not names[0][0]:
+                    raise RuntimeError("策略委托名称缺失或不唯一")
+                name = names[0][0]
+                codes = {json.loads(r[0])["code"] for r in self.db.execute(
+                    "SELECT DISTINCT p.data FROM plans p JOIN orders o ON o.plan=p.id WHERE o.name=?", (name,))}
+                if len(codes) != 1:
+                    raise RuntimeError("同名证券无法唯一匹配代码")
+                row = by_name.get(name, dict(total=0, available=0))
+                updates.append((record["id"], day, row["total"], row["available"]))
+            with self.db:
+                self.db.executemany("INSERT OR REPLACE INTO morning_checks VALUES (?,?,?,?)", updates)
+                self.db.execute("UPDATE holdings_runs SET status='complete',data=? WHERE day=?",
+                                (json.dumps(holdings, ensure_ascii=False), day))
+            self.watch_status.clear()
+            log.info("收盘持仓整表核对完成 day=%s 持仓行=%d 策略记录=%d", day, len(holdings), len(updates))
+        except Exception as error:
+            with self.db:
+                self.db.execute("UPDATE holdings_runs SET status='failed',error=? WHERE day=?", (str(error), day))
+            self.errors.append("持仓整表核对失败，请手动检查：" + str(error))
+            log.exception("收盘持仓整表核对失败，不自动重复查询")
 
     def monitor(self, record, now):
         day = now.date().isoformat()
@@ -171,31 +215,16 @@ class Worker:
         if not buys or day <= p["planned_buy_date"]:
             return
         key = record["id"]
-        checked = self.db.execute("SELECT day FROM morning_checks WHERE plan=?", (key,)).fetchone()
+        checked = self.db.execute("SELECT * FROM morning_checks WHERE plan=?", (key,)).fetchone()
         needs_recovery = any(not o["done"] for o in buys)
-        if bought <= sold and not needs_recovery and checked:
-            return
-        if not checked or checked["day"] != day:
-            holding = self.sim.position(p["code"])
-            with self.db:
-                self.db.execute("INSERT OR REPLACE INTO morning_checks VALUES (?,?,?,?)",
-                                (key,day,holding["total"],holding["available"]))
-            self.watch_status[key] = (now, max(0, min(bought - sold, holding["available"], holding["total"])))
-            log.info("模拟持仓核对 %s 总数 %d 可卖 %d 策略余额 %d",
-                     key, holding["total"], holding["available"], bought-sold)
         if needs_recovery:
             self.errors.append(f"{key} 买单成交待核对，仅管理已核实成交数量")
-        if bought <= sold:
-            self.watch_status[key] = (now, 0)
-            return
-        previous = self.watch_status.get(key)
-        # Daily/restart checks establish sellable shares; only zero availability needs polling.
-        if previous is None or (previous[1] == 0 and (now - previous[0]).total_seconds() >= 60):
-            holding = self.sim.position(p["code"])
-            available = max(0, min(bought - sold, holding["available"], holding["total"]))
-            self.watch_status[key] = (now, available)
-        else:
-            available = min(bought - sold, previous[1])
+        available = max(0, bought - sold)
+        if checked and checked["day"] >= p["planned_buy_date"]:
+            # Previous-close available=0 may be T+1; use total as next-day monitoring cap.
+            cap = checked["available"] if checked["day"] == day else checked["total"]
+            available = min(available, cap)
+        self.watch_status[key] = (now, available)
         if not market_open(now) or not available:
             return
         reason = record["exit"] or exit_reason(p, last_price=None, now=now,
