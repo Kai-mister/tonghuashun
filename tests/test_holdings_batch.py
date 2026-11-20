@@ -65,3 +65,43 @@ class HoldingsBatchTests(unittest.TestCase):
           '</node><node><node resource-id="'+s.pkg+':id/stock_manage" text="持仓管理"/></node></node></hierarchy>')
         s.nodes=Mock(return_value=list(root.iter('node')))
         self.assertEqual(s.holdings_page(),([dict(name='软通动力',total=300,available=0)],True,None))
+
+    def test_delayed_fill_saved_at_close_and_next_morning_checked_once(self):
+        with sqlite3.connect(':memory:') as db:
+            sim=FakeSim()
+            sim.holdings=Mock(return_value=[dict(name='样本',total=300,available=0)])
+            sim.report=Mock(return_value=[dict(name='样本',side='买入',price='34.21',
+                quantity=300,filled=300,status='全部成交',time='09:30:00')])
+            w=Worker(sim,db)
+            plan=dict(code='301236',planned_buy_date='2026-11-19',liquidate_at='2026-11-20T14:50:00+08:00',stop_loss='1',take_profit='99')
+            db.execute('INSERT INTO plans VALUES (?,?,NULL)',('p',json.dumps(plan)))
+            db.execute("INSERT INTO orders(plan,name,side,day,qty,filled,done,stamp,price) VALUES ('p','样本','买入','2026-11-19',300,0,0,'09:30:00','34.21')")
+            # A slow loop that misses 16:30 still checks within the wake window.
+            w.tick(self.at(19,16,32))
+            self.assertEqual(tuple(db.execute('SELECT filled,done FROM orders').fetchone()),(300,1))
+            self.assertEqual(db.execute('SELECT total FROM morning_checks').fetchone()[0],300)
+            sim.holdings.return_value=[dict(name='样本',total=300,available=300)]
+            w=Worker(sim,db)
+            with patch('strategy_worker.fetch_plans',return_value={'stocks':[]}):
+                w.tick(self.at(20,9,20));w.tick(self.at(20,9,20))
+                Worker(sim,db).tick(self.at(20,9,20))
+            self.assertEqual(sim.holdings.call_count,2)
+            with patch('strategy_worker.fetch_quotes',return_value={'301236':dict(last='34')}):
+                w.tick(self.at(20,10,0))
+            self.assertEqual(w.watch_status['p'][1],300)
+            w.tick(self.at(20,16,30))
+            self.assertEqual(sim.holdings.call_count,3)
+            sim.report.assert_called_once()
+
+    def test_report_failure_still_saves_holdings_and_manual_can_retry(self):
+        with sqlite3.connect(':memory:') as db:
+            sim=FakeSim();sim.holdings=Mock(return_value=[])
+            sim.report=Mock(side_effect=RuntimeError('report unavailable'))
+            w=Worker(sim,db)
+            db.execute("INSERT INTO orders(side,day,qty) VALUES ('买入','2026-11-19',100)")
+            w.tick(self.at(19,16,30));w.tick(self.at(19,16,31))
+            sim.report.assert_called_once();sim.holdings.assert_called_once()
+            self.assertEqual(db.execute('SELECT status,data FROM holdings_runs').fetchone()[:],('partial','[]'))
+            sim.report.return_value=[];sim.report.side_effect=None
+            w.check_holdings(self.at(19,16,33),force=True)
+            self.assertEqual(sim.holdings.call_count,2)

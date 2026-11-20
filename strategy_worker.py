@@ -51,8 +51,12 @@ class Worker:
             plan TEXT PRIMARY KEY, day TEXT NOT NULL, total INTEGER, available INTEGER);
           CREATE TABLE IF NOT EXISTS identity(account TEXT PRIMARY KEY);
           CREATE TABLE IF NOT EXISTS holdings_schedule(day TEXT PRIMARY KEY);
+          CREATE TABLE IF NOT EXISTS holdings_sessions(day TEXT, slot TEXT, PRIMARY KEY(day,slot));
           CREATE TABLE IF NOT EXISTS holdings_runs(day TEXT PRIMARY KEY, status TEXT, data TEXT, error TEXT);
         """)
+        # Preserve previously completed/attempted close checks across upgrades.
+        db.execute("INSERT OR IGNORE INTO holdings_sessions SELECT day, 'close' FROM holdings_schedule")
+        db.commit()
         sim.tab("查询")
         account = db.execute("SELECT account FROM identity").fetchone()
         if account and sim.account != account[0]:
@@ -132,28 +136,38 @@ class Worker:
         hm = now.strftime("%H:%M")
         if now.weekday() >= 5:
             return
-        if hm == self.settings["buy_time"] or manual and buy_window(now):
-            if self.cache_date != (day, str(self.settings)) or not self.cached_plans or manual:
-                stocks = fetch_plans()["stocks"]
-                self.cached_plans = select_plans(stocks, now.date(), self.settings)
-                log.info("买入计划检查 时间=%s 设定=%s 手动=%s 接口股票=%d 当日计划=%d",
-                         now.isoformat(), self.settings["buy_time"], manual, len(stocks), len(self.cached_plans))
-                self.cache_date = (day, str(self.settings))
-            for p in self.cached_plans:
-                if not p["quantity"]:
-                    log.info("跳过买单 %s：%s", p["code"], p.get("skip_reason"))
-                    continue
-                key = day + "/" + p["code"]
-                if not self.db.execute("SELECT 1 FROM orders WHERE plan=?", (key,)).fetchone():
-                    with self.db:
-                        self.db.execute("INSERT OR REPLACE INTO plans VALUES (?,?,NULL)",(key,json.dumps(p)))
-                    try:
-                        self.submit(key,p,"买入",p["quantity"],p["limit_price"])
-                    except Exception as error:
-                        self.errors.append(f"{p['code']} 买单未完成：{error}")
-                        log.exception("模拟买单未完成 %s", key)
-        if hm == "16:30" or manual:
-            self.check_holdings(now, force=manual)
+        try:
+            if hm == self.settings["buy_time"] or manual and buy_window(now):
+                if self.cache_date != (day, str(self.settings)) or not self.cached_plans or manual:
+                    stocks = fetch_plans()["stocks"]
+                    self.cached_plans = select_plans(stocks, now.date(), self.settings)
+                    log.info("买入计划检查 时间=%s 设定=%s 手动=%s 接口股票=%d 当日计划=%d",
+                             now.isoformat(), self.settings["buy_time"], manual, len(stocks), len(self.cached_plans))
+                    self.cache_date = (day, str(self.settings))
+                for p in self.cached_plans:
+                    if not p["quantity"]:
+                        log.info("跳过买单 %s：%s", p["code"], p.get("skip_reason"))
+                        continue
+                    key = day + "/" + p["code"]
+                    if not self.db.execute("SELECT 1 FROM orders WHERE plan=?", (key,)).fetchone():
+                        with self.db:
+                            self.db.execute("INSERT OR REPLACE INTO plans VALUES (?,?,NULL)",(key,json.dumps(p)))
+                        try:
+                            self.submit(key,p,"买入",p["quantity"],p["limit_price"])
+                        except Exception as error:
+                            self.errors.append(f"{p['code']} 买单未完成：{error}")
+                            log.exception("模拟买单未完成 %s", key)
+        except Exception as error:
+            self.errors.append("买入计划读取失败：" + str(error))
+            log.exception("买入计划读取失败，继续持仓核对与卖出监控")
+        # A morning check follows the buy batch, so reading reports cannot consume
+        # its narrow submission window. Slots are independent and survive restarts.
+        if manual:
+            self.check_holdings(now, force=True, reconcile_orders=False)
+        elif hm == self.settings["buy_time"]:
+            self.check_holdings(now, slot="morning")
+        elif "16:30" <= hm < "16:36":
+            self.check_holdings(now, slot="close")
         if manual:
             self.watch_status.clear()
         if not market_open(now):
@@ -165,16 +179,24 @@ class Worker:
                 self.errors.append(f"{record['id']} 持仓或卖出异常：{error}")
                 log.exception("模拟持仓查询或退出异常 %s", record["id"])
 
-    def check_holdings(self, now, force=False):
+    def check_holdings(self, now, force=False, slot="close", reconcile_orders=True):
         day = now.date().isoformat()
-        if not force and self.db.execute("SELECT 1 FROM holdings_schedule WHERE day=?", (day,)).fetchone():
+        if not force and self.db.execute("SELECT 1 FROM holdings_sessions WHERE day=? AND slot=?", (day,slot)).fetchone():
             return
         # Persist the attempt before UI access: failure/restart must not create a polling loop.
         with self.db:
             if not force:
-                self.db.execute("INSERT INTO holdings_schedule VALUES (?)", (day,))
+                self.db.execute("INSERT INTO holdings_sessions VALUES (?,?)", (day,slot))
             self.db.execute("INSERT OR REPLACE INTO holdings_runs VALUES (?, 'running', NULL, NULL)", (day,))
         try:
+            sync_error = None
+            if reconcile_orders:
+                try:
+                    self.reconcile(now, allow_cancel=False)
+                except Exception as error:
+                    sync_error = "委托成交核对失败：" + str(error)
+                    self.errors.append(sync_error)
+                    log.exception("定时委托核对失败，继续保存实际持仓")
             holdings = self.sim.holdings()
             by_name = {r["name"]: r for r in holdings}
             if len(by_name) != len(holdings):
@@ -195,15 +217,21 @@ class Worker:
                 updates.append((record["id"], day, row["total"], row["available"]))
             with self.db:
                 self.db.executemany("INSERT OR REPLACE INTO morning_checks VALUES (?,?,?,?)", updates)
-                self.db.execute("UPDATE holdings_runs SET status='complete',data=? WHERE day=?",
-                                (json.dumps(holdings, ensure_ascii=False), day))
+                self.db.execute("UPDATE holdings_runs SET status=?,data=?,error=? WHERE day=?",
+                                ("partial" if sync_error else "complete", json.dumps(holdings, ensure_ascii=False), sync_error, day))
             self.watch_status.clear()
-            log.info("收盘持仓整表核对完成 day=%s 持仓行=%d 策略记录=%d", day, len(holdings), len(updates))
+            unresolved = self.db.execute(
+                "SELECT id,plan,filled,qty FROM orders WHERE day<? AND done=0", (day,)).fetchall()
+            for order in unresolved:
+                message = f"{order['plan']} 跨日委托 #{order['id']} 待人工核实成交 ({order['filled']}/{order['qty']})，持仓已保存"
+                self.errors.append(message)
+                log.warning(message)
+            log.info("持仓整表核对完成 day=%s slot=%s 持仓行=%d 策略记录=%d", day, "manual" if force else slot, len(holdings), len(updates))
         except Exception as error:
             with self.db:
                 self.db.execute("UPDATE holdings_runs SET status='failed',error=? WHERE day=?", (str(error), day))
             self.errors.append("持仓整表核对失败，请手动检查：" + str(error))
-            log.exception("收盘持仓整表核对失败，不自动重复查询")
+            log.exception("持仓整表核对失败 slot=%s，不自动重复查询", slot)
 
     def monitor(self, record, now):
         day = now.date().isoformat()
