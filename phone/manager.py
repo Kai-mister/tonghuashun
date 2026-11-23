@@ -1,6 +1,5 @@
 """Authenticated loopback control channel for the installed Android manager."""
 from strategy_settings import load, save
-from phone.native import enabled as native, start as native_start
 from phone.backend import API_VERSION, UPDATE_PROTOCOL, MAX_BUNDLE, installed_digest
 from phone.update import launch
 import hmac
@@ -30,10 +29,10 @@ def running():
 
 def maintain(reason):
     """Recover dead execution services without unpausing or requesting catch-up."""
-    if (STATE / 'paused').exists() or (STATE / 'migrated-to-app').exists():
+    if (STATE / 'paused').exists():
         return
     try:
-        with socket.create_connection(('127.0.0.1', 19008) if native() else ('::1', 9008), timeout=.5):
+        with socket.create_connection(('::1', 9008), timeout=.5):
             ui_ready = True
     except OSError:
         ui_ready = False
@@ -41,11 +40,7 @@ def maintain(reason):
     if restart:
         env = dict(os.environ)
         env.pop('LD_LIBRARY_PATH', None)
-        if native():
-            if not running() and ui_ready:
-                native_start('worker')
-        else:
-            subprocess.run(['/system/bin/sh', 'phone/background.sh'], env=env, check=True, timeout=10)
+        subprocess.run(['/system/bin/sh', 'phone/background.sh'], env=env, check=True, timeout=10)
     payload = dict(at=datetime.now().isoformat(), reason=reason, restarted=restart)
     temp = STATE / 'watch-heartbeat.tmp'
     temp.write_text(json.dumps(payload, ensure_ascii=False))
@@ -83,34 +78,6 @@ def snapshot():
                 ((STATE / "check-result").read_text() if (STATE / "check-result").exists() else ""))
 
 
-def handoff():
-    """User-initiated migration; fence old worker before returning a stable backup."""
-    import base64
-    from phone.update import stop, pid_for
-    if not (STATE / 'paused').exists():
-        raise ValueError('请先暂停旧策略')
-    pid = pid_for('worker')
-    if pid and (STATE / 'heartbeat').read_text().split() != [str(pid), 'paused']:
-        raise ValueError('等待旧策略完成当前操作')
-    stop('worker')
-    # UiAutomation suppresses enabled accessibility services unless disconnected.
-    import signal
-    for process in Path('/proc').iterdir():
-        try:
-            if b'com.wetest.uia2.Main' in (process / 'cmdline').read_bytes().split(b'\0'):
-                os.kill(int(process.name), signal.SIGTERM)
-        except (OSError, ValueError):
-            continue
-    backup = STATE / 'native-migration.sqlite3'
-    with sqlite3.connect('state/strategy.sqlite3') as source, sqlite3.connect(backup) as dest:
-        source.backup(dest)
-    files = {'state/strategy.sqlite3': backup.read_bytes()}
-    for name in ('state/settings.json', '.config/redis-racknerd/stock-api.token'):
-        files[name] = Path(name).read_bytes()
-    (STATE / 'migrated-to-app').touch(mode=0o600)
-    return {'files': {k: base64.b64encode(v).decode() for k,v in files.items()}}
-
-
 class Handler(BaseHTTPRequestHandler):
     def reply(self, code, data):
         body = json.dumps(data, ensure_ascii=False).encode()
@@ -124,27 +91,6 @@ class Handler(BaseHTTPRequestHandler):
         if not hmac.compare_digest(self.headers.get("Authorization",""), "Bearer "+TOKEN):
             return self.reply(403, {})
         try:
-            if (STATE / 'migrated-to-app').exists() and action not in ('status', 'handoff'):
-                raise ValueError('已迁移到 App，旧执行器禁止恢复')
-            if action == 'diagnostics':
-                return self.reply(200, dict(runtime='app' if native() else 'shell', uid=os.getuid(),
-                    heartbeat=(STATE/'heartbeat').read_text() if (STATE/'heartbeat').exists() else '',
-                    worker_log=(STATE/'worker.log').read_text()[-6000:] if (STATE/'worker.log').exists() else ''))
-            if action == 'verify':
-                if not native() or not (STATE / 'paused').exists():
-                    raise ValueError('无障碍自检仅允许在 App 内置策略暂停时运行')
-                if running() and (STATE / 'heartbeat').read_text().split() != [(STATE / 'worker.pid').read_text().strip(), 'paused']:
-                    raise ValueError('请等待策略完成当前操作后再自检')
-                from phone.local import LocalTrader
-                from ths.simulator import Simulator
-                sim = Simulator(LocalTrader())
-                holdings = sim.holdings()
-                rows = sim.report()
-                return self.reply(200, dict(status='自检通过', account=sim.account, holdings=holdings, orders=rows))
-            if action == 'handoff':
-                if native():
-                    raise ValueError('已经是 App 内置后台')
-                return self.reply(200, handoff())
             if action == "upgrade":
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 0 < length <= MAX_BUNDLE:
@@ -175,24 +121,21 @@ class Handler(BaseHTTPRequestHandler):
                 if not running():
                     env = dict(os.environ)
                     env.pop("LD_LIBRARY_PATH",None)
-                    if native():
-                        native_start('worker')
-                    else:
-                        subprocess.run(["/system/bin/sh","phone/background.sh"],env=env,check=True,timeout=10)
+                    subprocess.run(["/system/bin/sh","phone/background.sh"],env=env,check=True,timeout=10)
                 (STATE / "paused").unlink(missing_ok=True)
             return self.reply(200,snapshot())
-        except (ValueError, RuntimeError) as error:
+        except ValueError as error:
             return self.reply(400, {"error":str(error)})
         except (OSError, sqlite3.Error, subprocess.SubprocessError):
             return self.reply(503, {"error":"无法读取状态或启动策略"})
 
     def do_GET(self):
-        if self.path in ("/status", "/diagnostics"):
-            return self.handle_api(self.path[1:])
+        if self.path == "/status":
+            return self.handle_api("status")
         self.reply(404,{})
 
     def do_POST(self):
-        if self.path in ("/pause","/resume","/settings","/check","/upgrade","/maintain","/handoff","/verify"):
+        if self.path in ("/pause","/resume","/settings","/check","/upgrade","/maintain"):
             return self.handle_api(self.path[1:])
         self.reply(404,{})
 
@@ -201,6 +144,4 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    server = HTTPServer(("127.0.0.1",18736 if native() else 18735), Handler)
-    (STATE / 'manager.pid').write_text(str(os.getpid()))
-    server.serve_forever()
+    HTTPServer(("127.0.0.1",18735), Handler).serve_forever()

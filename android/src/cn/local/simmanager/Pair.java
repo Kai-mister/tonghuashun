@@ -5,6 +5,5 @@ public class Pair extends BroadcastReceiver {
         String key = intent.getStringExtra("key");
         if (key != null && key.matches("[0-9a-f]{64}"))
             context.getSharedPreferences("local",0).edit().putString("key",key).commit();
-        if(intent.hasExtra("boot_restore"))BootRestore.optIn(context,intent.getBooleanExtra("boot_restore",false));
     }
 }

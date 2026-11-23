@@ -59,16 +59,6 @@ class ManagerTests(unittest.TestCase):
                         run.assert_called_once()
                     self.assertFalse(Path('state/check-request').exists())
                     self.assertTrue(json.loads(Path('state/watch-heartbeat.json').read_text())['restarted'])
-                    # Migration permanently fences legacy restart and all mutations.
-                    Path('state/migrated-to-app').touch()
-                    with patch.object(module, 'native_start') as start, patch.object(module.subprocess, 'run') as run:
-                        self.assertEqual(request('/resume',b'')[0],400)
-                        self.assertEqual(request('/maintain',b'{"reason":"alarm"}')[0],400)
-                        self.assertEqual(request('/check',b'')[0],400)
-                        start.assert_not_called();run.assert_not_called()
-                    self.assertEqual(request('/status')[0],200)
-                    Path('state/migrated-to-app').unlink()
-                    self.assertEqual(request('/verify',b'')[0],400)
                     Path('state/update-result.json').write_text('{"phase":"updating"}')
                     self.assertEqual(request('/settings',b'{}')[0],400)
                 finally:

@@ -7,15 +7,12 @@ out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 mkdir -p "$out/classes" "$out/dex" dist
 python3 ../scripts/bundle-backend.py "$out"
-cp runtime/runtime.zip "$out/assets/runtime.zip"
 "$BUILD_TOOLS/aapt2" compile --dir res -o "$out/resources.zip"
 "$BUILD_TOOLS/aapt2" link -I "$ANDROID_JAR" --manifest AndroidManifest.xml -A "$out/assets" -o "$out/app.apk" "$out/resources.zip"
 javac --release 8 -classpath "$ANDROID_JAR" -d "$out/classes" src/cn/local/simmanager/*.java "$out/BuildBackend.java"
 jar cf "$out/code.jar" -C "$out/classes" .
 "$BUILD_TOOLS/d8" --min-api 26 --lib "$ANDROID_JAR" --output "$out/dex" "$out/code.jar"
 (cd "$out/dex" && zip -q "$out/app.apk" classes.dex)
-unzip -qo runtime/native.zip -d "$out/native"
-(cd "$out/native" && zip -qr "$out/app.apk" lib)
 "$BUILD_TOOLS/zipalign" -f 4 "$out/app.apk" "$out/aligned.apk"
 "$BUILD_TOOLS/apksigner" sign --ks "$KEYSTORE" --ks-pass env:KS_PASS --out dist/sim-manager.apk "$out/aligned.apk"
 "$BUILD_TOOLS/apksigner" verify dist/sim-manager.apk

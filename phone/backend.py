@@ -8,7 +8,7 @@ API_VERSION = 2
 UPDATE_PROTOCOL = 1
 FILES = (
     'strategy_settings.py', 'premarket.py', 'strategy_worker.py', 'stock_api.py',
-    'phone/manager.py', 'phone/local.py', 'phone/backend.py', 'phone/update.py', 'phone/native.py',
+    'phone/manager.py', 'phone/local.py', 'phone/backend.py', 'phone/update.py',
     'phone/start.sh', 'phone/background.sh', 'ths/__init__.py', 'ths/simulator.py',
 )
 MAX_BUNDLE = 2 * 1024 * 1024

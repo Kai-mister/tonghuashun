@@ -6,7 +6,7 @@ command -v adb >/dev/null
 adb -d shell 'test -x /data/local/tmp/ths-sim/python && test -s /data/local/tmp/ths-sim/state/manager.key'
 adb -d install -r android/dist/sim-manager.apk
 adb -d shell 'mkdir -p /data/local/tmp/ths-sim/upgrade/phone /data/local/tmp/ths-sim/upgrade/ths'
-for file in strategy_settings.py premarket.py strategy_worker.py stock_api.py phone/manager.py phone/local.py phone/backend.py phone/update.py phone/native.py phone/start.sh phone/background.sh ths/__init__.py ths/simulator.py; do
+for file in strategy_settings.py premarket.py strategy_worker.py stock_api.py phone/manager.py phone/local.py phone/backend.py phone/update.py phone/start.sh phone/background.sh ths/__init__.py ths/simulator.py; do
     adb -d push "$file" "/data/local/tmp/ths-sim/upgrade/$file"
 done
 adb -d push scripts/bootstrap-phone.py /data/local/tmp/ths-sim/upgrade/bootstrap.py

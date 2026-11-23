@@ -131,7 +131,7 @@ public class Main extends Activity {
             try{WatchService.test(this);refreshWatch();Toast.makeText(this,"已设置，已退到后台；可熄屏等待自检",Toast.LENGTH_LONG).show();moveTaskToBack(true);}
             catch(RuntimeException error){Toast.makeText(this,error.getMessage(),Toast.LENGTH_LONG).show();}
         });
-        label(watch,"系统会显示下一次唤醒闹钟（不响铃）。关闭界面或划掉最近任务后，通知栏值守继续。不要强行停止 App。设备厂商的后台限制也需允许；密码锁屏需手动解锁，完成无障碍迁移后，重启并解锁可恢复；未迁移的旧后台仍需 USB。",13,green,false);
+        label(watch,"系统会显示下一次唤醒闹钟（不响铃）。关闭界面或划掉最近任务后，通知栏值守继续。不要强行停止 App。设备厂商的后台限制也需允许；密码锁屏需手动解锁，手机重启后执行器可能需要 USB 恢复。",13,green,false);
         LinearLayout actions=card(Color.WHITE);
         check=new Button(this);check.setEnabled(false);check.setText("检查并补执行");actions.addView(check);
         check.setOnClickListener(v->new android.app.AlertDialog.Builder(this)
@@ -141,20 +141,6 @@ public class Main extends Activity {
         checkResult=label(actions,"",14,green,false);
         LinearLayout homePage=page;
         page=screen(root,1);
-        CheckBox restoreAuth=new CheckBox(this);restoreAuth.setText("正常重启时恢复已开启的无障碍服务");
-        restoreAuth.setChecked(getSharedPreferences("local",0).getBoolean("boot_restore",false));page.addView(restoreAuth);
-        restoreAuth.setOnClickListener(v->{try{BootRestore.optIn(this,restoreAuth.isChecked());}catch(RuntimeException e){restoreAuth.setChecked(false);new android.app.AlertDialog.Builder(this).setMessage(e.getMessage()+"。该权限可以修改系统安全设置；本应用仅用来恢复自身无障碍开关，不更改其他服务。手动关闭无障碍后正常重启不会重新开启。").setPositiveButton("确定",null).show();}});
-        Button accessibility=new Button(this);accessibility.setText("开启无障碍自动操作");page.addView(accessibility);
-        accessibility.setOnClickListener(v->startActivity(new android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)));
-        Button migrate=new Button(this);migrate.setText("迁移到 App 独立运行");page.addView(migrate);migrate.setVisibility(NativeRuntime.ready(this)?View.GONE:View.VISIBLE);
-        migrate.setOnClickListener(v->{
-            migrate.setEnabled(false);migrate.setText("正在迁移，请稍候…");
-            new Thread(()->{String error=null;try{NativeRuntime.migrate(this);}catch(Exception e){error=e.getMessage();}
-                final String problem=error;runOnUiThread(()->{if(problem==null)migrate.setVisibility(View.GONE);migrate.setEnabled(true);migrate.setText("迁移到 App 独立运行");
-                    new android.app.AlertDialog.Builder(this).setMessage(problem==null?"迁移完成，设置和账本已保留。策略已暂停，请确认无障碍权限后启动策略。":"迁移未完成："+problem).setPositiveButton("确定",null).show();load("status");});
-            }).start();
-        });
-
         label(page,"策略设置",26,ink,true);
         LinearLayout settings=card(Color.WHITE);
         target=input(settings,"建议金额（元）",8194);
@@ -253,8 +239,7 @@ public class Main extends Activity {
         io.execute(()->{
             JSONObject data=null;
             try{
-                NativeRuntime.ensure(this);
-                HttpURLConnection c=(HttpURLConnection)new URL(NativeRuntime.base(this)+action).openConnection();
+                HttpURLConnection c=(HttpURLConnection)new URL("http://127.0.0.1:18735/"+action).openConnection();
                 try{
                     c.setConnectTimeout(2500);c.setReadTimeout(15000);
                     c.setRequestProperty("Authorization","Bearer "+getSharedPreferences("local",0).getString("key",""));
@@ -295,7 +280,7 @@ public class Main extends Activity {
                     compatible=false;
                     state.setText(upgrading?"后台更新中":"服务不可用");
                     String message=result==null?"无法连接本机后台":result.optString("error");
-                    notice.setText(message);backendNotice.setText(upgrading?"正在重连后台，请稍候；长时间未恢复请检查无障碍权限或重新打开 App。":"连接或操作失败："+message);
+                    notice.setText(message);backendNotice.setText(upgrading?"正在重连后台，请稍候；长时间未恢复请通过 USB 修复。":"连接或操作失败："+message);
                     control.setEnabled(false);save.setEnabled(false);check.setEnabled(false);
                     upgrade.setEnabled(false);
                     if(!action.equals("status"))Toast.makeText(this,message,Toast.LENGTH_LONG).show();

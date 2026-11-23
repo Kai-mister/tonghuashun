@@ -2,8 +2,6 @@
 set -eu
 cd /data/local/tmp/ths-sim
 mkdir -p state
-# Never resurrect the legacy executor after an App migration.
-if test -f state/migrated-to-app; then exit 0; fi
 if test -s state/manager.key && test -f phone/manager.py; then
     if ! ss -lnt 2>/dev/null | grep -Fq '127.0.0.1:18735'; then
         setsid sh phone/start.sh manager >>state/manager.log 2>&1 </dev/null &
