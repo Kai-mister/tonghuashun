@@ -113,6 +113,7 @@ public class WatchService extends Service {
         io.execute(()->{
             JSONObject status=null;String error=null;
             try{
+                NativeRuntime.ensure(this);
                 status=request("status",null);
                 if(status.optInt("api_version")!=BuildBackend.API_VERSION||!BuildBackend.DIGEST.equals(status.optString("backend_digest")))
                     throw new IOException("后台版本不匹配，请打开 App 更新");
@@ -126,7 +127,7 @@ public class WatchService extends Service {
             handler.post(()->{
                 busy=false;if(destroyed)return;
                 String message=problem==null?"后台"+result.optString("status"):
-                    "后台不可用，请打开 App 检查；失联可能需 USB 恢复："+problem;
+                    "后台不可用，请打开 App 检查；请检查无障碍权限："+problem;
                 if(problem==null&&result.optBoolean("paused",true)){
                     getSharedPreferences("local",0).edit().putBoolean("watch_enabled",false).apply();schedule(this);
                 }
@@ -144,7 +145,7 @@ public class WatchService extends Service {
         });
     }
     JSONObject request(String action,String body)throws Exception{
-        HttpURLConnection c=(HttpURLConnection)new URL("http://127.0.0.1:18735/"+action).openConnection();
+        HttpURLConnection c=(HttpURLConnection)new URL(NativeRuntime.base(this)+action).openConnection();
         try{
             c.setConnectTimeout(2500);c.setReadTimeout(15000);
             c.setRequestProperty("Authorization","Bearer "+getSharedPreferences("local",0).getString("key",""));

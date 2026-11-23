@@ -306,6 +306,8 @@ def market_open(now):
 def run(trader, path):
     path = Path(path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
+    if (path.parent / 'migrated-to-app').exists():
+        raise RuntimeError('已迁移到 App，禁止启动旧执行器')
     with open(str(path)+".lock","a") as lock, sqlite3.connect(path) as db:
         fcntl.flock(lock,fcntl.LOCK_EX | fcntl.LOCK_NB)
         while True:

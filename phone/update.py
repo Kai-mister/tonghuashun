@@ -42,6 +42,9 @@ def stop(service):
 
 
 def start(service):
+    from phone.native import enabled, start as native_start
+    if enabled():
+        return native_start(service)
     args = ['/system/bin/sh', 'phone/start.sh'] + (['manager'] if service == 'manager' else [])
     env = dict(os.environ)
     env.pop('LD_LIBRARY_PATH', None)
@@ -55,7 +58,7 @@ def healthy(expected):
     token = (STATE / 'manager.key').read_text().strip()
     for _ in range(30):
         try:
-            request = Request('http://127.0.0.1:18735/status', headers={'Authorization': 'Bearer ' + token})
+            request = Request('http://127.0.0.1:' + ('18736' if os.environ.get('THS_NATIVE') == '1' else '18735') + '/status', headers={'Authorization': 'Bearer ' + token})
             with urlopen(request, timeout=1) as response:
                 data = json.load(response)
             if data.get('backend_digest') == expected:
