@@ -166,8 +166,6 @@ class Worker:
             self.check_holdings(now, force=True, reconcile_orders=False)
         elif hm == self.settings["buy_time"]:
             self.check_holdings(now, slot="morning")
-        elif "16:30" <= hm < "16:36":
-            self.check_holdings(now, slot="close")
         if manual:
             self.watch_status.clear()
         if not market_open(now):
@@ -179,7 +177,7 @@ class Worker:
                 self.errors.append(f"{record['id']} 持仓或卖出异常：{error}")
                 log.exception("模拟持仓查询或退出异常 %s", record["id"])
 
-    def check_holdings(self, now, force=False, slot="close", reconcile_orders=True):
+    def check_holdings(self, now, force=False, slot="morning", reconcile_orders=True):
         day = now.date().isoformat()
         if not force and self.db.execute("SELECT 1 FROM holdings_sessions WHERE day=? AND slot=?", (day,slot)).fetchone():
             return

@@ -7,14 +7,12 @@ public final class WatchSchedule {
     static final ZoneId ZONE=ZoneId.of("Asia/Shanghai");
     static final LocalTime MORNING=LocalTime.of(9,14), NOON=LocalTime.of(11,31);
     static final LocalTime AFTERNOON=LocalTime.of(12,59), END=LocalTime.of(15,1);
-    static final LocalTime CLOSE_CHECK=LocalTime.of(16,29), CLOSE_END=LocalTime.of(16,36);
     static boolean weekday(LocalDate day){return day.getDayOfWeek().getValue()<=5;}
     public static boolean active(long millis){
         ZonedDateTime now=Instant.ofEpochMilli(millis).atZone(ZONE);
         LocalTime t=now.toLocalTime();
         return weekday(now.toLocalDate()) && ((!t.isBefore(MORNING)&&t.isBefore(NOON)) ||
-                (!t.isBefore(AFTERNOON)&&t.isBefore(END)) ||
-                (!t.isBefore(CLOSE_CHECK)&&t.isBefore(CLOSE_END)));
+                (!t.isBefore(AFTERNOON)&&t.isBefore(END)));
     }
     public static long next(long millis){
         ZonedDateTime now=Instant.ofEpochMilli(millis).atZone(ZONE);
@@ -24,7 +22,7 @@ public final class WatchSchedule {
         for(int i=0;i<8;i++){
             LocalDate day=now.toLocalDate().plusDays(i);
             if(!weekday(day))continue;
-            for(LocalTime time:new LocalTime[]{MORNING,AFTERNOON,CLOSE_CHECK}){
+            for(LocalTime time:new LocalTime[]{MORNING,AFTERNOON}){
                 long at=ZonedDateTime.of(day,time,ZONE).toInstant().toEpochMilli();
                 if(at>millis)return at;
             }
